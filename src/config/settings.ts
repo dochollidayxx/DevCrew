@@ -4,7 +4,7 @@ import { AgentRole, DevCrewConfig } from '../types';
 /**
  * Reads DevCrew configuration from VSCode settings and provides
  * a typed, validated config object. LLM is handled via VSCode's
- * built-in Language Model API (GitHub Copilot), so no API key config needed.
+ * built-in Language Model API, so no API key config needed.
  */
 export function getConfig(): DevCrewConfig {
   const config = vscode.workspace.getConfiguration('devcrew');

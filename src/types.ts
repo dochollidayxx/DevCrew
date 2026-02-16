@@ -161,7 +161,7 @@ export interface FileLock {
 
 /**
  * Wraps VSCode's Language Model API (vscode.lm) for use by agents.
- * Uses GitHub Copilot's provided models - no API keys needed.
+ * Uses VSCode's Language Model API - no API keys needed.
  */
 export interface LLMService {
   /**

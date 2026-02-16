@@ -1,7 +1,39 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
 out/
+
+# Test / coverage
 coverage/
 .vscode-test/
+
+# Packaged extension
 *.vsix
+
+# Environment / secrets
 .env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE (keep .vscode/ for launch & task configs)
+*.swp
+*.swo
+*~
+
+# TypeScript incremental compilation
+*.tsbuildinfo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Claude Code
+.claude/

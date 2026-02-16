@@ -57,7 +57,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       try {
-        // Initialize LLM via VSCode's Language Model API (GitHub Copilot)
+        // Initialize LLM via VSCode's Language Model API
         const llm = new VSCodeLLMService();
         await llm.initialize();
 

@@ -11,9 +11,6 @@
     "Programming Languages",
     "Other"
   ],
-  "extensionDependencies": [
-    "github.copilot"
-  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {

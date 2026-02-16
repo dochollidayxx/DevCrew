@@ -3,8 +3,7 @@ import { LLMMessage, LLMService } from '../types';
 
 /**
  * LLM service that uses VSCode's built-in Language Model API (vscode.lm).
- * This leverages GitHub Copilot's provided models, so no API keys are needed.
- * The user just needs an active Copilot subscription.
+ * This leverages models provided by any installed LM provider (e.g. GitHub Copilot Chat).
  */
 export class VSCodeLLMService implements LLMService {
   private model: vscode.LanguageModelChat | null = null;
@@ -19,7 +18,7 @@ export class VSCodeLLMService implements LLMService {
    * Prefers the default Copilot model.
    */
   async initialize(): Promise<void> {
-    // Select available chat models - GHCP provides these
+    // Select available chat models
     const models = await vscode.lm.selectChatModels({
       vendor: 'copilot',
     });
@@ -29,7 +28,7 @@ export class VSCodeLLMService implements LLMService {
       const allModels = await vscode.lm.selectChatModels();
       if (allModels.length === 0) {
         throw new Error(
-          'No language models available. Make sure GitHub Copilot is installed and signed in.'
+          'No language models available. Make sure a language model provider (e.g. GitHub Copilot Chat) is available and signed in.'
         );
       }
       this.model = allModels[0];
