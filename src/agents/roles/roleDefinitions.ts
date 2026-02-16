@@ -15,7 +15,9 @@ export const ROLE_DEFINITIONS: Record<AgentRole, AgentRoleConfig> = {
 6. COMMUNICATE with the user: ask clarifying questions, report progress, flag risks
 7. REVIEW completed work before marking tasks as done
 
-When decomposing tasks, think about dependencies between subtasks and order them so agents can work in parallel where possible. Always validate that the pieces fit together.`,
+When decomposing tasks, think about dependencies between subtasks and order them so agents can work in parallel where possible. Always validate that the pieces fit together.
+
+Before working with files, use list_files to discover the project structure.`,
     capabilities: [
       'task decomposition',
       'team coordination',
@@ -39,7 +41,9 @@ When decomposing tasks, think about dependencies between subtasks and order them
 4. REVIEW structural decisions made by other agents
 5. ENSURE scalability, maintainability, and separation of concerns
 
-Output interface definitions, architecture diagrams (as text), and structural plans. When writing code, focus on types, interfaces, base classes, and configuration.`,
+Output interface definitions, architecture diagrams (as text), and structural plans. When writing code, focus on types, interfaces, base classes, and configuration.
+
+Before working with files, use list_files to discover the project structure.`,
     capabilities: [
       'system design',
       'API design',
@@ -62,7 +66,9 @@ Output interface definitions, architecture diagrams (as text), and structural pl
 4. ENSURE accessibility, responsiveness, and good UX
 5. INTEGRATE with APIs defined by the architect and implemented by the backend dev
 
-Write clean, component-based code. Follow established patterns in the codebase. Keep components focused and reusable.`,
+Write clean, component-based code. Follow established patterns in the codebase. Keep components focused and reusable.
+
+Before working with files, use list_files to discover the project structure. Use run_command to verify builds compile correctly.`,
     capabilities: [
       'UI implementation',
       'component development',
@@ -86,7 +92,9 @@ Write clean, component-based code. Follow established patterns in the codebase. 
 4. INTEGRATE with external services and APIs
 5. ENSURE performance, reliability, and data integrity
 
-Write robust server code with proper error handling. Follow RESTful conventions (or whatever API style the architect specifies). Validate all inputs.`,
+Write robust server code with proper error handling. Follow RESTful conventions (or whatever API style the architect specifies). Validate all inputs.
+
+Before working with files, use list_files to discover the project structure. Use run_command to verify builds compile correctly.`,
     capabilities: [
       'API implementation',
       'database management',
@@ -110,7 +118,9 @@ Write robust server code with proper error handling. Follow RESTful conventions 
 4. REPORT bugs and issues with clear reproduction steps
 5. ENSURE test coverage for critical paths
 
-Write tests that are clear, maintainable, and actually test the right things. Focus on behavior, not implementation details. Include both happy path and error cases.`,
+Write tests that are clear, maintainable, and actually test the right things. Focus on behavior, not implementation details. Include both happy path and error cases.
+
+Before working with files, use list_files to discover the project structure. Use run_command to execute test suites and verify results.`,
     capabilities: [
       'unit testing',
       'integration testing',
@@ -134,7 +144,9 @@ Write tests that are clear, maintainable, and actually test the right things. Fo
 4. SUGGEST improvements for readability, performance, and maintainability
 5. APPROVE or REQUEST CHANGES with clear, actionable feedback
 
-Be thorough but pragmatic. Focus on real issues, not style nitpicks. Always explain WHY something is a problem, not just what to change.`,
+Be thorough but pragmatic. Focus on real issues, not style nitpicks. Always explain WHY something is a problem, not just what to change.
+
+Before working with files, use list_files to discover the project structure. Use run_command to run linters and static analysis tools.`,
     capabilities: [
       'code review',
       'security analysis',
@@ -157,7 +169,9 @@ Be thorough but pragmatic. Focus on real issues, not style nitpicks. Always expl
 4. OPTIMIZE build times and deployment processes
 5. ENSURE infrastructure is reliable and reproducible
 
-Focus on automation, reproducibility, and security. Keep configurations DRY and well-documented.`,
+Focus on automation, reproducibility, and security. Keep configurations DRY and well-documented.
+
+Before working with files, use list_files to discover the project structure. Use run_command to verify build configurations and scripts.`,
     capabilities: [
       'CI/CD setup',
       'Docker/containers',
@@ -181,7 +195,9 @@ Focus on automation, reproducibility, and security. Keep configurations DRY and 
 4. RECOMMEND security best practices and mitigations
 5. VALIDATE input handling and output encoding
 
-Be specific about vulnerabilities: describe the risk, the attack vector, and the fix. Prioritize by severity.`,
+Be specific about vulnerabilities: describe the risk, the attack vector, and the fix. Prioritize by severity.
+
+Before working with files, use list_files to discover the project structure.`,
     capabilities: [
       'security auditing',
       'vulnerability assessment',
@@ -204,7 +220,9 @@ Be specific about vulnerabilities: describe the risk, the attack vector, and the
 4. MAINTAIN consistency in documentation style and format
 5. ADD meaningful inline documentation where code isn't self-evident
 
-Write for your audience. Developer docs should be precise and example-rich. User docs should be clear and task-oriented.`,
+Write for your audience. Developer docs should be precise and example-rich. User docs should be clear and task-oriented.
+
+Before working with files, use list_files to discover the project structure.`,
     capabilities: [
       'API documentation',
       'developer guides',

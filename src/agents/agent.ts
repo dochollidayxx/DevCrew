@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as cp from 'child_process';
 import {
   AgentRoleConfig,
   AgentState,
@@ -33,6 +34,7 @@ export abstract class Agent {
 
   private messageSubscription: vscode.Disposable | undefined;
   private abortController: AbortController | null = null;
+  private pendingQuestions: Map<string, { resolve: (answer: string) => void; timeout: ReturnType<typeof setTimeout> }> = new Map();
 
   constructor(
     roleConfig: AgentRoleConfig,
@@ -121,12 +123,13 @@ export abstract class Agent {
 
   // ─── Task Execution ───────────────────────────────────────────────────
 
-  async executeTask(task: Task): Promise<void> {
+  async executeTask(task: Task): Promise<string> {
     this.state.currentTaskId = task.id;
     this.setStatus(AgentStatus.Working);
     this.log(`Starting task: ${task.title}`);
 
     this.abortController = new AbortController();
+    const filesWritten: string[] = [];
 
     try {
       // Add task context to conversation
@@ -162,6 +165,11 @@ export abstract class Agent {
         for (const action of actions) {
           if (this.abortController.signal.aborted) break;
 
+          // Track files written during this task
+          if (action.type === 'write_file') {
+            filesWritten.push(action.filePath);
+          }
+
           const result = await this.executeAction(action, task);
           this.conversationHistory.push({
             role: 'user',
@@ -175,15 +183,25 @@ export abstract class Agent {
         }
       }
 
-      // Report completion
+      // Extract completion summary
+      const completeAction = this.parseActions(
+        this.conversationHistory[this.conversationHistory.length - 1]?.content ?? ''
+      ).find(a => a.type === 'complete') as CompleteAction | undefined;
+      const completionSummary = completeAction?.summary
+        ?? this.conversationHistory[this.conversationHistory.length - 1]?.content?.slice(0, 2000)
+        ?? 'Task completed';
+
+      // Report completion with file provenance
       this.sendMessage(MessageType.TaskCompleted, null, {
         taskId: task.id,
-        summary: this.conversationHistory[this.conversationHistory.length - 1]?.content,
+        summary: completionSummary,
+        filesWritten,
       });
 
       this.state.completedTaskIds.push(task.id);
       this.state.currentTaskId = null;
       this.setStatus(AgentStatus.Idle);
+      return completionSummary;
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       this.log(`Task failed: ${errorMsg}`);
@@ -192,6 +210,7 @@ export abstract class Agent {
         error: errorMsg,
       });
       this.setStatus(AgentStatus.Error);
+      throw err;
     }
   }
 
@@ -250,6 +269,30 @@ export abstract class Agent {
           actions.push({ type: 'complete', summary: body });
           break;
         }
+        case 'list_files': {
+          const pathMatch = body.match(/path="([^"]+)"/);
+          const patternMatch = body.match(/pattern="([^"]+)"/);
+          actions.push({
+            type: 'list_files',
+            dirPath: pathMatch?.[1] ?? '.',
+            pattern: patternMatch?.[1] ?? '**/*',
+          });
+          break;
+        }
+        case 'run_command': {
+          const cmdMatch = body.match(/command="([^"]+)"/);
+          const cwdMatch = body.match(/cwd="([^"]+)"/);
+          const timeoutMatch = body.match(/timeout="([^"]+)"/);
+          if (cmdMatch) {
+            actions.push({
+              type: 'run_command',
+              command: cmdMatch[1],
+              cwd: cwdMatch?.[1],
+              timeout: timeoutMatch ? parseInt(timeoutMatch[1], 10) : undefined,
+            });
+          }
+          break;
+        }
         default: {
           this.log(`Unknown action type: ${type}`);
         }
@@ -271,7 +314,13 @@ export abstract class Agent {
         return this.handleReadFile(action);
       }
       case 'ask': {
-        return this.handleAsk(action);
+        return await this.handleAsk(action);
+      }
+      case 'list_files': {
+        return this.handleListFiles(action);
+      }
+      case 'run_command': {
+        return this.handleRunCommand(action, task);
       }
       case 'blocker': {
         this.setStatus(AgentStatus.Blocked);
@@ -314,17 +363,26 @@ export abstract class Agent {
         action.filePath
       );
 
+      // Determine if this is a create or replace based on file existence
+      let editType: 'create' | 'replace' = 'create';
+      try {
+        await vscode.workspace.fs.stat(fileUri);
+        editType = 'replace'; // File exists — replace contents
+      } catch {
+        // File doesn't exist — create it
+      }
+
       const edit: FileEdit = {
         uri: fileUri,
-        type: 'create',
+        type: editType,
         content: action.content,
         agentId: this.id,
         taskId: task.id,
-        description: `${this.roleConfig.name}: writing ${action.filePath}`,
+        description: `${this.roleConfig.name}: ${editType === 'create' ? 'creating' : 'updating'} ${action.filePath}`,
       };
 
       await this.fileManager.applyEdit(edit);
-      return `File written: ${action.filePath}`;
+      return `File ${editType === 'create' ? 'created' : 'updated'}: ${action.filePath}`;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return `Error writing file: ${msg}`;
@@ -346,15 +404,111 @@ export abstract class Agent {
       const content = await this.fileManager.readFile(fileUri);
       return `File contents of ${action.filePath}:\n${content}`;
     } catch (err) {
-      return `Error reading file: ${action.filePath} not found or unreadable.`;
+      return `Error reading file: ${action.filePath} not found or unreadable. Use <action type="list_files">path="." pattern="**/*"</action> to discover available files.`;
     }
   }
 
-  private handleAsk(action: AskAction): string {
+  private async handleAsk(action: AskAction): Promise<string> {
+    const questionId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    const answerPromise = new Promise<string>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingQuestions.delete(questionId);
+        resolve('No response received (timeout)');
+      }, 30_000);
+
+      this.pendingQuestions.set(questionId, { resolve, timeout });
+    });
+
     this.sendMessage(MessageType.Question, action.targetAgentId, {
+      questionId,
       question: action.question,
     });
-    return `Question sent${action.targetAgentId ? ` to ${action.targetAgentId}` : ' to team'}.`;
+
+    const answer = await answerPromise;
+    return `Answer received: ${answer}`;
+  }
+
+  protected resolveAnswer(questionId: string, answer: string): void {
+    const pending = this.pendingQuestions.get(questionId);
+    if (pending) {
+      clearTimeout(pending.timeout);
+      this.pendingQuestions.delete(questionId);
+      pending.resolve(answer);
+    }
+  }
+
+  protected handleAnswerMessage(message: Message): void {
+    const payload = message.payload as { questionId?: string; answer?: string };
+    const answer = payload.answer ?? JSON.stringify(message.payload);
+
+    if (payload.questionId) {
+      this.resolveAnswer(payload.questionId, answer);
+    } else {
+      // Backwards compat: resolve most recent pending question
+      const keys = Array.from(this.pendingQuestions.keys());
+      if (keys.length > 0) {
+        this.resolveAnswer(keys[keys.length - 1], answer);
+      }
+    }
+  }
+
+  private async handleListFiles(action: ListFilesAction): Promise<string> {
+    try {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders) {
+        return 'Error: No workspace folder open.';
+      }
+
+      const baseUri = vscode.Uri.joinPath(workspaceFolders[0].uri, action.dirPath);
+      const files = await this.fileManager.listFiles(baseUri, action.pattern);
+      const relativePaths = files.map(f => vscode.workspace.asRelativePath(f));
+      if (relativePaths.length === 0) {
+        return `No files found matching pattern "${action.pattern}" in "${action.dirPath}". Try a broader pattern like "**/*" or a different directory. Use path="." to search from the workspace root.`;
+      }
+      return `Found ${relativePaths.length} files:\n${relativePaths.join('\n')}`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `Error listing files: ${msg}`;
+    }
+  }
+
+  private async handleRunCommand(action: RunCommandAction, task: Task): Promise<string> {
+    const ALLOWED_COMMANDS = ['npm', 'npx', 'yarn', 'pnpm', 'node', 'tsc', 'eslint', 'jest', 'vitest', 'git', 'cat', 'ls', 'find', 'grep'];
+    const DANGEROUS_PATTERNS = /[;`]|\$\(|&&|\|\|/;
+
+    const firstWord = action.command.split(/\s+/)[0];
+    if (!ALLOWED_COMMANDS.includes(firstWord)) {
+      return `Error: Command '${firstWord}' is not in the allow-list. Allowed: ${ALLOWED_COMMANDS.join(', ')}`;
+    }
+
+    if (DANGEROUS_PATTERNS.test(action.command)) {
+      return 'Error: Command contains dangerous shell metacharacters.';
+    }
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders) {
+      return 'Error: No workspace folder open.';
+    }
+
+    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    const cwd = action.cwd
+      ? vscode.Uri.joinPath(workspaceFolders[0].uri, action.cwd).fsPath
+      : workspaceRoot;
+
+    const timeout = Math.min(action.timeout ?? 30_000, 300_000);
+
+    return new Promise<string>((resolve) => {
+      cp.exec(action.command, { cwd, timeout }, (error, stdout, stderr) => {
+        if (error) {
+          const output = (stderr || error.message).slice(0, 10_000);
+          resolve(`Command failed:\n${output}`);
+        } else {
+          const output = stdout.slice(0, 10_000);
+          resolve(output || '(no output)');
+        }
+      });
+    });
   }
 
   // ─── Messaging ────────────────────────────────────────────────────────
@@ -391,6 +545,8 @@ export abstract class Agent {
       `To perform actions, use XML action tags:`,
       `<action type="write_file">path="relative/path"<content>file content here</content></action>`,
       `<action type="read_file">path="relative/path"</action>`,
+      `<action type="list_files">path="relative/dir" pattern="**/*.ts"</action>`,
+      `<action type="run_command">command="npm test" cwd="optional/subdir" timeout="60000"</action>`,
       `<action type="ask">to="agent-id" Your question here</action>`,
       `<action type="status">Your status message</action>`,
       `<action type="blocker">Description of what's blocking you</action>`,
@@ -399,6 +555,28 @@ export abstract class Agent {
   }
 
   protected buildTaskPrompt(task: Task): string {
+    const depResults = task.metadata['dependencyResults'] as Array<{
+      taskId: string;
+      title: string;
+      summary: string;
+      filesWritten?: string[];
+    }> | undefined;
+
+    const depContext: string[] = [];
+    if (depResults?.length) {
+      depContext.push('', '## Completed Dependencies:');
+      for (const d of depResults) {
+        depContext.push(`### ${d.title}`);
+        depContext.push(d.summary?.slice(0, 1000) ?? 'No summary');
+        if (d.filesWritten?.length) {
+          depContext.push(`\nFiles created/modified by this task (read these for context):`);
+          for (const f of d.filesWritten) {
+            depContext.push(`- ${f}`);
+          }
+        }
+      }
+    }
+
     return [
       `## Assigned Task: ${task.title}`,
       '',
@@ -408,9 +586,13 @@ export abstract class Agent {
       task.dependsOn.length > 0
         ? `Dependencies: ${task.dependsOn.join(', ')}`
         : '',
+      ...depContext,
       '',
-      `Work iteratively: read files, plan, write code, then report completion.`,
+      `Work iteratively: use list_files and read_file first to understand the project, then plan, write code, and report completion.`,
       `Use action tags to interact with the filesystem and team.`,
+      depResults?.some(d => d.filesWritten?.length)
+        ? `IMPORTANT: Start by reading the files listed above from your dependencies to understand the contracts and interfaces you must conform to.`
+        : '',
     ]
       .filter(Boolean)
       .join('\n');
@@ -468,10 +650,25 @@ interface CompleteAction {
   summary: string;
 }
 
+interface ListFilesAction {
+  type: 'list_files';
+  dirPath: string;
+  pattern: string;
+}
+
+interface RunCommandAction {
+  type: 'run_command';
+  command: string;
+  cwd?: string;
+  timeout?: number;
+}
+
 type AgentAction =
   | WriteFileAction
   | ReadFileAction
   | AskAction
   | BlockerAction
   | StatusAction
-  | CompleteAction;
+  | CompleteAction
+  | ListFilesAction
+  | RunCommandAction;

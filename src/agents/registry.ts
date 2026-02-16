@@ -37,6 +37,7 @@ export class AgentRegistry {
       this.llm
     );
     this.agents.set(this.teamLead.id, this.teamLead);
+    this.messageBus.registerAlias('team-lead', this.teamLead.id);
 
     // Create specialist agents for each configured role
     for (const role of roles) {
@@ -54,6 +55,7 @@ export class AgentRegistry {
         this.llm
       );
       this.agents.set(agent.id, agent);
+      this.messageBus.registerAlias(role, agent.id);
     }
 
     // Give the Team Lead knowledge of its team

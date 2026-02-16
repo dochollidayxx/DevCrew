@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskBoard } from '../orchestration/taskBoard';
 import { TaskStatus, TaskPriority, Task } from '../types';
 
@@ -7,6 +7,10 @@ describe('TaskBoard', () => {
 
   beforeEach(() => {
     board = new TaskBoard();
+  });
+
+  afterEach(() => {
+    board.dispose();
   });
 
   // ─── Task CRUD ─────────────────────────────────────────────────────
@@ -279,6 +283,45 @@ describe('TaskBoard', () => {
       const blocked = board.blockTask(t2.id, t1.id);
       expect(blocked?.status).toBe(TaskStatus.Blocked);
       expect(blocked?.blockedBy).toContain(t1.id);
+    });
+  });
+
+  // ─── completeTask with summary ─────────────────────────────────────
+
+  describe('completeTask with summary', () => {
+    it('stores completionSummary in task metadata', () => {
+      const task = board.createTask({ title: 'T', description: 'd' });
+      board.completeTask(task.id, 'Built REST API with 5 endpoints');
+
+      const completed = board.getTask(task.id)!;
+      expect(completed.status).toBe(TaskStatus.Completed);
+      expect(completed.metadata['completionSummary']).toBe('Built REST API with 5 endpoints');
+    });
+
+    it('completeTask without summary still works (backwards compatible)', () => {
+      const task = board.createTask({ title: 'T', description: 'd' });
+      const completed = board.completeTask(task.id);
+
+      expect(completed?.status).toBe(TaskStatus.Completed);
+      expect(completed?.metadata['completionSummary']).toBeUndefined();
+    });
+
+    it('completing a task still unblocks dependents', () => {
+      const t1 = board.createTask({ title: 'A', description: 'a' });
+      const t2 = board.createTask({ title: 'B', description: 'b' });
+      board.addDependency(t2.id, t1.id);
+
+      const changeListener = vi.fn();
+      board.onTaskChange(changeListener);
+
+      board.completeTask(t1.id, 'Done with A');
+
+      // t2 should now be ready (still Pending, deps met)
+      expect(board.areDependenciesMet(t2.id)).toBe(true);
+      // The fireChange for t2 should have been called
+      const firedTasks = changeListener.mock.calls.map((c: any) => c[0]);
+      const t2Fired = firedTasks.some((t: Task) => t.id === t2.id);
+      expect(t2Fired).toBe(true);
     });
   });
 

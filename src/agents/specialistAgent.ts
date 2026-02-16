@@ -30,7 +30,8 @@ export class SpecialistAgent extends Agent {
 
       case MessageType.Answer:
         this.log(`Received answer from ${message.fromAgentId}`);
-        // Feed the answer back into conversation context
+        this.handleAnswerMessage(message);
+        // Also feed into conversation context as fallback
         this.conversationHistory.push({
           role: 'user',
           content: `Answer from team member: ${JSON.stringify(message.payload)}`,

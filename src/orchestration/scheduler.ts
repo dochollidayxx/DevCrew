@@ -179,19 +179,53 @@ export class Scheduler {
     return bestAgent ?? idleAgents[0];
   }
 
+  private enrichTaskWithDependencies(task: Task): Task {
+    if (task.dependsOn.length === 0) return task;
+
+    const results: Array<{
+      taskId: string;
+      title: string;
+      summary: string;
+      filesWritten?: string[];
+    }> = [];
+    for (const depId of task.dependsOn) {
+      const dep = this.taskBoard.getTask(depId);
+      if (dep?.status === TaskStatus.Completed && dep.metadata['completionSummary']) {
+        results.push({
+          taskId: dep.id,
+          title: dep.title,
+          summary: dep.metadata['completionSummary'] as string,
+          filesWritten: dep.metadata['filesWritten'] as string[] | undefined,
+        });
+      }
+    }
+
+    if (results.length === 0) return task;
+
+    return {
+      ...task,
+      metadata: {
+        ...task.metadata,
+        dependencyResults: results,
+      },
+    };
+  }
+
   private dispatch(agent: Agent, task: Task): void {
     this.log(`Dispatching "${task.title}" to ${agent.roleConfig.name}`);
 
     this.taskBoard.assignTask(task.id, agent.id);
     this.taskBoard.startTask(task.id);
 
+    const enrichedTask = this.enrichTaskWithDependencies(task);
+
     const execution = agent
-      .executeTask(task)
-      .then(() => {
+      .executeTask(enrichedTask)
+      .then((summary) => {
         // Only mark complete if not paused in the meantime
         const current = this.taskBoard.getTask(task.id);
         if (current && current.status !== TaskStatus.Paused) {
-          this.taskBoard.completeTask(task.id);
+          this.taskBoard.completeTask(task.id, summary);
           this.log(`Task "${task.title}" completed by ${agent.roleConfig.name}`);
         }
       })

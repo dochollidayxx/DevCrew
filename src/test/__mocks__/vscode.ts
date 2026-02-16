@@ -314,6 +314,17 @@ export const workspace = {
 
   findFiles: async (_include: RelativePattern, _exclude?: string) =>
     [] as Uri[],
+
+  asRelativePath: (pathOrUri: Uri | string) => {
+    const p = typeof pathOrUri === 'string' ? pathOrUri : pathOrUri.path;
+    return p.replace('/workspace/', '');
+  },
+
+  openTextDocument: async (_uri: Uri) => ({
+    uri: _uri,
+    getText: () => 'mock file content',
+    positionAt: (offset: number) => new Position(0, offset),
+  }),
 };
 
 // ─── Commands ─────────────────────────────────────────────────────────────────

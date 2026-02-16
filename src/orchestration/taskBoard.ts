@@ -178,8 +178,13 @@ export class TaskBoard {
     return this.updateTask(taskId, { status: TaskStatus.InProgress });
   }
 
-  completeTask(taskId: string): Task | undefined {
+  completeTask(taskId: string, completionSummary?: string): Task | undefined {
     const task = this.updateTask(taskId, { status: TaskStatus.Completed });
+
+    // Store the completion summary for downstream dependencies
+    if (task && completionSummary) {
+      task.metadata['completionSummary'] = completionSummary;
+    }
 
     // Check if completing this task unblocks others
     if (task) {

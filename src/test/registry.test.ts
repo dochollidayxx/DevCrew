@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AgentRegistry } from '../agents/registry';
 import { MessageBus } from '../communication/messageBus';
 import { FileManager } from '../fileops/fileManager';
@@ -29,6 +29,13 @@ describe('AgentRegistry', () => {
       taskBoard,
       createMockLLM()
     );
+  });
+
+  afterEach(() => {
+    registry.disposeAll();
+    messageBus.dispose();
+    fileManager.dispose();
+    taskBoard.dispose();
   });
 
   it('buildTeam creates Team Lead + specialists', () => {
@@ -126,5 +133,78 @@ describe('AgentRegistry', () => {
 
     // Should have team-lead + frontend only
     expect(registry.getAllAgents()).toHaveLength(2);
+  });
+
+  // ─── Alias Registration ─────────────────────────────────────────────
+
+  describe('alias registration via buildTeam', () => {
+    it('buildTeam calls messageBus.registerAlias for each agent role', () => {
+      const registerAliasSpy = vi.spyOn(messageBus, 'registerAlias');
+
+      registry.buildTeam(['team-lead', 'frontend', 'backend']);
+
+      // team-lead + frontend + backend = 3 calls
+      expect(registerAliasSpy).toHaveBeenCalledTimes(3);
+    });
+
+    it('Team Lead is registered with alias "team-lead"', () => {
+      const registerAliasSpy = vi.spyOn(messageBus, 'registerAlias');
+
+      registry.buildTeam(['team-lead', 'frontend']);
+
+      const teamLeadCall = registerAliasSpy.mock.calls.find(
+        (call) => call[0] === 'team-lead'
+      );
+      expect(teamLeadCall).toBeDefined();
+      expect(teamLeadCall![1]).toBe(registry.getTeamLead()!.id);
+    });
+
+    it('specialists are registered with their role names', () => {
+      const registerAliasSpy = vi.spyOn(messageBus, 'registerAlias');
+
+      registry.buildTeam(['team-lead', 'frontend', 'backend']);
+
+      const frontendAgent = registry.getAgentByRole('frontend');
+      const frontendCall = registerAliasSpy.mock.calls.find(
+        (call) => call[0] === 'frontend'
+      );
+      expect(frontendCall).toBeDefined();
+      expect(frontendCall![1]).toBe(frontendAgent!.id);
+
+      const backendAgent = registry.getAgentByRole('backend');
+      const backendCall = registerAliasSpy.mock.calls.find(
+        (call) => call[0] === 'backend'
+      );
+      expect(backendCall).toBeDefined();
+      expect(backendCall![1]).toBe(backendAgent!.id);
+    });
+
+    it('messages addressed by role name reach the correct agent after buildTeam', () => {
+      registry.buildTeam(['team-lead', 'frontend', 'backend']);
+      registry.startAll();
+
+      // The frontend agent should now be reachable via "frontend" alias
+      const frontendAgent = registry.getAgentByRole('frontend');
+      expect(frontendAgent).toBeDefined();
+
+      // Send a message addressed to "frontend" role and verify it arrives
+      const handler = vi.fn();
+      messageBus.subscribe(frontendAgent!.id, handler);
+
+      messageBus.publish({
+        id: 'test-msg-1',
+        type: 0 as any, // StatusUpdate
+        fromAgentId: 'test-sender',
+        toAgentId: 'frontend',
+        payload: { test: true },
+        timestamp: new Date(),
+        replyToMessageId: null,
+      });
+
+      // Handler was called twice: once from the agent's own start() subscription,
+      // and once from our test subscription. But either way, the message reached
+      // the agent's subscriber.
+      expect(handler).toHaveBeenCalled();
+    });
   });
 });

@@ -13,6 +13,7 @@ type MessageHandler = (message: Message) => void;
 export class MessageBus {
   private subscribers: Map<string, MessageHandler> = new Map();
   private typeSubscribers: Map<MessageType, Set<MessageHandler>> = new Map();
+  private roleAliases: Map<string, string> = new Map();
   private messageHistory: Message[] = [];
   private readonly maxHistorySize = 1000;
 
@@ -27,6 +28,21 @@ export class MessageBus {
     return new vscode.Disposable(() => {
       this.subscribers.delete(agentId);
     });
+  }
+
+  /**
+   * Register a role name as an alias for an agent ID,
+   * so messages addressed to the role name are routed to the correct agent.
+   */
+  registerAlias(alias: string, agentId: string): void {
+    this.roleAliases.set(alias, agentId);
+  }
+
+  /**
+   * Remove a previously registered alias.
+   */
+  unregisterAlias(alias: string): void {
+    this.roleAliases.delete(alias);
   }
 
   /**
@@ -58,9 +74,14 @@ export class MessageBus {
     // Fire global event (for UI, logging, etc.)
     this._onMessage.fire(message);
 
+    // Resolve role aliases so agents can address messages by role name
+    const resolvedToAgentId = message.toAgentId
+      ? (this.roleAliases.get(message.toAgentId) ?? message.toAgentId)
+      : null;
+
     // Route to target or broadcast
-    if (message.toAgentId) {
-      const handler = this.subscribers.get(message.toAgentId);
+    if (resolvedToAgentId) {
+      const handler = this.subscribers.get(resolvedToAgentId);
       if (handler) {
         handler(message);
       }
@@ -117,6 +138,7 @@ export class MessageBus {
   dispose(): void {
     this.subscribers.clear();
     this.typeSubscribers.clear();
+    this.roleAliases.clear();
     this.messageHistory = [];
     this._onMessage.dispose();
   }

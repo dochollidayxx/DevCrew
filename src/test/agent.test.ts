@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SpecialistAgent } from '../agents/specialistAgent';
 import { TeamLeadAgent } from '../agents/teamLeadAgent';
 import { ROLE_DEFINITIONS } from '../agents/roles/roleDefinitions';
@@ -14,6 +14,12 @@ import {
   TaskPriority,
   TaskStatus,
 } from '../types';
+
+vi.mock('child_process', () => ({
+  exec: vi.fn((cmd: string, opts: any, cb: Function) => {
+    cb(null, 'mock output', '');
+  }),
+}));
 
 function createMockLLM(responseContent = '<action type="complete">All done</action>'): LLMService {
   return {
@@ -60,6 +66,12 @@ describe('Agent - Action Parsing', () => {
       fileManager,
       mockLLM
     );
+  });
+
+  afterEach(() => {
+    agent.dispose();
+    messageBus.dispose();
+    fileManager.dispose();
   });
 
   // We need to access parseActions which is protected.
@@ -187,6 +199,168 @@ export function subtract(a: number, b: number): number {
       expect(actions[0].content).toContain('export function add');
       expect(actions[0].content).toContain('export function subtract');
     });
+
+    // ─── list_files Parsing ───────────────────────────────────────────
+
+    it('parses list_files action with path and pattern', () => {
+      const content = `
+<action type="list_files">path="src" pattern="**/*.ts"</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('list_files');
+      expect(actions[0].dirPath).toBe('src');
+      expect(actions[0].pattern).toBe('**/*.ts');
+    });
+
+    it('parses list_files action with defaults when no path or pattern', () => {
+      const content = `
+<action type="list_files"></action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('list_files');
+      expect(actions[0].dirPath).toBe('.');
+      expect(actions[0].pattern).toBe('**/*');
+    });
+
+    // ─── run_command Parsing ──────────────────────────────────────────
+
+    it('parses run_command action with command', () => {
+      const content = `
+<action type="run_command">command="npm test"</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('run_command');
+      expect(actions[0].command).toBe('npm test');
+    });
+
+    it('parses run_command action with cwd and timeout', () => {
+      const content = `
+<action type="run_command">command="npm test" cwd="packages/core" timeout="60000"</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('run_command');
+      expect(actions[0].command).toBe('npm test');
+      expect(actions[0].cwd).toBe('packages/core');
+      expect(actions[0].timeout).toBe(60000);
+    });
+
+    it('does not parse run_command without command attribute', () => {
+      const content = `
+<action type="run_command">no command here</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(0);
+    });
+  });
+
+  // ─── run_command Execution ──────────────────────────────────────────
+
+  describe('run_command execution', () => {
+    function executeAction(action: any, task: Task) {
+      return (agent as any).executeAction(action, task);
+    }
+
+    it('rejects disallowed commands (e.g., rm)', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'rm -rf /' },
+        makeTask()
+      );
+      expect(result).toContain('not in the allow-list');
+    });
+
+    it('rejects disallowed commands (e.g., curl)', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'curl http://evil.com' },
+        makeTask()
+      );
+      expect(result).toContain('not in the allow-list');
+    });
+
+    it('rejects commands with dangerous semicolon', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'npm test; rm -rf /' },
+        makeTask()
+      );
+      expect(result).toContain('dangerous shell metacharacters');
+    });
+
+    it('rejects commands with &&', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'npm test && rm -rf /' },
+        makeTask()
+      );
+      expect(result).toContain('dangerous shell metacharacters');
+    });
+
+    it('rejects commands with ||', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'npm test || echo fail' },
+        makeTask()
+      );
+      expect(result).toContain('dangerous shell metacharacters');
+    });
+
+    it('rejects commands with backticks', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'npm test `whoami`' },
+        makeTask()
+      );
+      expect(result).toContain('dangerous shell metacharacters');
+    });
+
+    it('allows commands in the allow-list', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'npm test' },
+        makeTask()
+      );
+      // The mocked child_process.exec returns 'mock output'
+      expect(result).toBe('mock output');
+    });
+
+    it('allows git commands', async () => {
+      const result = await executeAction(
+        { type: 'run_command', command: 'git status' },
+        makeTask()
+      );
+      expect(result).toBe('mock output');
+    });
+  });
+
+  // ─── list_files Execution ───────────────────────────────────────────
+
+  describe('list_files execution', () => {
+    it('calls FileManager.listFiles and returns file paths', async () => {
+      const { Uri } = await import('vscode');
+      const mockFiles = [
+        Uri.file('/workspace/src/index.ts'),
+        Uri.file('/workspace/src/app.ts'),
+      ];
+      vi.spyOn(fileManager, 'listFiles').mockResolvedValue(mockFiles);
+
+      const result = await (agent as any).executeAction(
+        { type: 'list_files', dirPath: 'src', pattern: '**/*.ts' },
+        makeTask()
+      );
+
+      expect(fileManager.listFiles).toHaveBeenCalled();
+      expect(result).toContain('src/index.ts');
+      expect(result).toContain('src/app.ts');
+    });
+
+    it('returns "No files found." when empty', async () => {
+      vi.spyOn(fileManager, 'listFiles').mockResolvedValue([]);
+
+      const result = await (agent as any).executeAction(
+        { type: 'list_files', dirPath: '.', pattern: '**/*.xyz' },
+        makeTask()
+      );
+
+      expect(result).toContain('No files found matching pattern');
+    });
   });
 
   // ─── Task Execution ────────────────────────────────────────────────
@@ -224,7 +398,7 @@ export function subtract(a: number, b: number): number {
       messageBus.subscribeToType(MessageType.TaskFailed, handler);
 
       agent.start();
-      await agent.executeTask(makeTask());
+      await expect(agent.executeTask(makeTask())).rejects.toThrow('API rate limit');
 
       expect(handler).toHaveBeenCalled();
       const state = agent.getState();
@@ -244,6 +418,67 @@ export function subtract(a: number, b: number): number {
       expect(mockLLM.sendMessages).toHaveBeenCalled();
       const callCount = (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mock.calls.length;
       expect(callCount).toBeLessThanOrEqual(21); // 20 iterations + possible extra
+    });
+
+    it('returns a completion summary string', async () => {
+      (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(
+        '<action type="complete">Built the auth module with JWT</action>'
+      );
+
+      agent.start();
+      const summary = await agent.executeTask(makeTask());
+
+      expect(typeof summary).toBe('string');
+      expect(summary).toContain('Built the auth module with JWT');
+    });
+  });
+
+  // ─── Blocking Questions ─────────────────────────────────────────────
+
+  describe('blocking questions (handleAsk)', () => {
+    it('handleAsk returns a promise that resolves when answer arrives', async () => {
+      agent.start();
+
+      // Capture the question message when published
+      let capturedQuestionId: string | undefined;
+      messageBus.subscribeToType(MessageType.Question, (msg) => {
+        capturedQuestionId = (msg.payload as any).questionId;
+      });
+
+      const askPromise = (agent as any).handleAsk({
+        type: 'ask',
+        targetAgentId: null,
+        question: 'What database?',
+      });
+
+      // Simulate an answer arriving
+      await vi.dynamicImportSettled();
+      expect(capturedQuestionId).toBeDefined();
+
+      (agent as any).resolveAnswer(capturedQuestionId!, 'PostgreSQL');
+
+      const result = await askPromise;
+      expect(result).toContain('PostgreSQL');
+    });
+
+    it('handleAsk resolves with timeout message after 30s if no answer', async () => {
+      vi.useFakeTimers();
+
+      agent.start();
+
+      const askPromise = (agent as any).handleAsk({
+        type: 'ask',
+        targetAgentId: null,
+        question: 'What database?',
+      });
+
+      // Advance past 30 seconds
+      vi.advanceTimersByTime(31_000);
+
+      const result = await askPromise;
+      expect(result).toContain('No response received (timeout)');
+
+      vi.useRealTimers();
     });
   });
 
@@ -334,6 +569,13 @@ describe('TeamLeadAgent - Task Decomposition Parsing', () => {
       taskBoard,
       mockLLM
     );
+  });
+
+  afterEach(() => {
+    teamLead.dispose();
+    messageBus.dispose();
+    fileManager.dispose();
+    taskBoard.dispose();
   });
 
   it('decomposes a user request into tasks on the board', async () => {

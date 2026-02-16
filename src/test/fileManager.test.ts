@@ -74,7 +74,7 @@ describe('FileManager', () => {
       // agent-2 tries to write the same file
       await expect(
         fm.applyEdit(makeEdit({ agentId: 'agent-2' }))
-      ).rejects.toThrow(/locked by agent/);
+      ).rejects.toThrow(/locked by another agent/);
 
       // Clean up
       resolveEdit?.(true);

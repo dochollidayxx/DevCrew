@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { MessageBus } from '../communication/messageBus';
 import { Message, MessageType } from '../types';
 
@@ -20,6 +20,10 @@ describe('MessageBus', () => {
 
   beforeEach(() => {
     bus = new MessageBus();
+  });
+
+  afterEach(() => {
+    bus.dispose();
   });
 
   // ─── Subscription & Routing ────────────────────────────────────────
@@ -60,6 +64,111 @@ describe('MessageBus', () => {
 
     bus.publish(makeMessage({ toAgentId: 'agent-a' }));
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  // ─── Role-Based Alias Routing ─────────────────────────────────────
+
+  describe('role aliases', () => {
+    it('registerAlias creates a mapping from role name to agent ID', () => {
+      const handler = vi.fn();
+      bus.subscribe('agent-backend-123', handler);
+      bus.registerAlias('backend', 'agent-backend-123');
+
+      const msg = makeMessage({ fromAgentId: 'agent-a', toAgentId: 'backend' });
+      bus.publish(msg);
+
+      expect(handler).toHaveBeenCalledWith(msg);
+    });
+
+    it('publishing to a role alias routes to the correct agent handler', () => {
+      const backendHandler = vi.fn();
+      const frontendHandler = vi.fn();
+      bus.subscribe('agent-backend-1', backendHandler);
+      bus.subscribe('agent-frontend-1', frontendHandler);
+      bus.registerAlias('backend', 'agent-backend-1');
+      bus.registerAlias('frontend', 'agent-frontend-1');
+
+      const msg = makeMessage({ fromAgentId: 'agent-lead', toAgentId: 'backend' });
+      bus.publish(msg);
+
+      expect(backendHandler).toHaveBeenCalledWith(msg);
+      expect(frontendHandler).not.toHaveBeenCalled();
+    });
+
+    it('publishing to an unknown alias does not crash', () => {
+      const handler = vi.fn();
+      bus.subscribe('agent-a', handler);
+
+      const msg = makeMessage({ fromAgentId: 'agent-a', toAgentId: 'unknown-role' });
+      expect(() => bus.publish(msg)).not.toThrow();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('alias routing coexists with direct ID routing', () => {
+      const handler = vi.fn();
+      bus.subscribe('agent-backend-1', handler);
+      bus.registerAlias('backend', 'agent-backend-1');
+
+      // Direct ID message
+      const directMsg = makeMessage({ fromAgentId: 'agent-a', toAgentId: 'agent-backend-1' });
+      bus.publish(directMsg);
+      expect(handler).toHaveBeenCalledWith(directMsg);
+
+      handler.mockClear();
+
+      // Alias message
+      const aliasMsg = makeMessage({ fromAgentId: 'agent-a', toAgentId: 'backend' });
+      bus.publish(aliasMsg);
+      expect(handler).toHaveBeenCalledWith(aliasMsg);
+    });
+
+    it('unregisterAlias removes the mapping', () => {
+      const handler = vi.fn();
+      bus.subscribe('agent-backend-1', handler);
+      bus.registerAlias('backend', 'agent-backend-1');
+
+      // Works before unregister
+      bus.publish(makeMessage({ fromAgentId: 'agent-a', toAgentId: 'backend' }));
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      handler.mockClear();
+      bus.unregisterAlias('backend');
+
+      // No longer routes after unregister
+      bus.publish(makeMessage({ fromAgentId: 'agent-a', toAgentId: 'backend' }));
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('broadcast messages are not affected by aliases', () => {
+      const handlerA = vi.fn();
+      const handlerB = vi.fn();
+      bus.subscribe('agent-a', handlerA);
+      bus.subscribe('agent-b', handlerB);
+      bus.registerAlias('backend', 'agent-b');
+
+      // Broadcast (toAgentId = null) goes to all except sender
+      const msg = makeMessage({ fromAgentId: 'agent-a', toAgentId: null });
+      bus.publish(msg);
+
+      expect(handlerA).not.toHaveBeenCalled(); // sender excluded
+      expect(handlerB).toHaveBeenCalledWith(msg);
+    });
+
+    it('dispose clears aliases', () => {
+      const handler = vi.fn();
+      bus.subscribe('agent-backend-1', handler);
+      bus.registerAlias('backend', 'agent-backend-1');
+
+      bus.dispose();
+
+      // Re-create bus for fresh state check
+      bus = new MessageBus();
+      bus.subscribe('agent-backend-1', handler);
+
+      // Alias no longer exists after dispose
+      bus.publish(makeMessage({ fromAgentId: 'agent-a', toAgentId: 'backend' }));
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 
   // ─── Type Subscriptions ────────────────────────────────────────────

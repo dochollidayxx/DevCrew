@@ -26,6 +26,7 @@ export class TeamLeadAgent extends Agent {
   private teamMembers: Agent[] = [];
   private readonly taskBoard: TaskBoard;
   private integrationQueue: string[] = [];
+  private integrationCompleted = false;
 
   constructor(
     roleConfig: AgentRoleConfig,
@@ -66,8 +67,15 @@ export class TeamLeadAgent extends Agent {
         '',
         `## Instructions`,
         `Analyze this request and decompose it into concrete tasks.`,
+        '',
+        `IMPORTANT — phasing rules:`,
+        `1. ALWAYS start with an architect task that defines the system design, interfaces, data models, and file structure. This task must produce concrete artifacts (type definitions, API contracts, schemas) — not just an assessment.`,
+        `2. ALL implementation tasks (frontend, backend, etc.) MUST depend on the architect's design task so they build against the defined contracts.`,
+        `3. Testing and review tasks MUST depend on the implementation tasks they verify.`,
+        `4. In each task description, explicitly reference which interface/contract files from the architect task the agent should read and conform to.`,
+        '',
         `For each task, specify:`,
-        `- A clear title and description`,
+        `- A clear title and description (include which files to read and which to create)`,
         `- Which team member role should handle it (${this.teamMembers.map((m) => m.roleConfig.role).join(', ')})`,
         `- Dependencies on other tasks (by title reference)`,
         `- Priority: critical, high, medium, or low`,
@@ -195,6 +203,11 @@ export class TeamLeadAgent extends Agent {
 
     // Check for completion
     if (stats.total > 0 && stats.completed === stats.total) {
+      if (this.integrationCompleted) {
+        this.log('All tasks completed and integration already done. Stopping.');
+        this.stopMonitoring();
+        return;
+      }
       this.log('All tasks completed! Starting integration.');
       this.stopMonitoring();
       await this.performIntegration();
@@ -285,7 +298,7 @@ export class TeamLeadAgent extends Agent {
         `Completed tasks:`,
         ...completedTasks.map(
           (t) =>
-            `- ${t.title} (by ${t.assigneeId}): ${t.description.slice(0, 100)}`
+            `- ${t.title} (by ${t.assigneeId}):\n  Description: ${t.description.slice(0, 100)}\n  Result: ${(t.metadata['completionSummary'] as string)?.slice(0, 500) ?? 'No summary'}`
         ),
         '',
         `If everything looks good, use <action type="complete">summary</action>.`,
@@ -296,16 +309,32 @@ export class TeamLeadAgent extends Agent {
     const response = await this.callLLM();
     const actions = this.parseActions(response);
 
+    // Use a local task object for integration actions — do NOT create tasks
+    // on the board, as the scheduler would dispatch them to specialists and
+    // they'd pile up indefinitely on pause/resume cycles.
+    const integrationTask: Task = {
+      id: `integration-${Date.now()}`,
+      title: 'Integration',
+      description: 'Team Lead integration pass',
+      status: TaskStatus.InProgress,
+      priority: TaskPriority.Critical,
+      assigneeId: this.id,
+      dependsOn: [],
+      blockedBy: [],
+      subtasks: [],
+      parentTaskId: null,
+      files: [],
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      completedAt: null,
+      metadata: {},
+    };
+
     for (const action of actions) {
-      await this.executeAction(
-        action,
-        this.taskBoard.createTask({
-          title: 'Integration',
-          description: 'Team Lead integration pass',
-        })
-      );
+      await this.executeAction(action, integrationTask);
     }
 
+    this.integrationCompleted = true;
     this.sendMessage(MessageType.IntegrationComplete, null, {});
     await this.reportFinalStatus();
   }
@@ -362,10 +391,27 @@ export class TeamLeadAgent extends Agent {
   protected handleMessage(message: Message): void {
     switch (message.type) {
       case MessageType.TaskCompleted: {
-        const payload = message.payload as { taskId: string; summary: string };
+        const payload = message.payload as {
+          taskId: string;
+          summary: string;
+          filesWritten?: string[];
+        };
         this.log(
           `Agent ${message.fromAgentId} completed task ${payload.taskId}`
         );
+        // Store summary and file provenance on the task for downstream dependencies
+        const completedTask = this.taskBoard.getTask(payload.taskId);
+        if (completedTask) {
+          if (payload.summary) {
+            completedTask.metadata['completionSummary'] =
+              typeof payload.summary === 'string'
+                ? payload.summary.slice(0, 2000)
+                : String(payload.summary).slice(0, 2000);
+          }
+          if (payload.filesWritten?.length) {
+            completedTask.metadata['filesWritten'] = payload.filesWritten;
+          }
+        }
         this.integrationQueue.push(payload.taskId);
         break;
       }
@@ -386,11 +432,24 @@ export class TeamLeadAgent extends Agent {
         this.log(
           `BLOCKER from ${message.fromAgentId}: ${payload.description}`
         );
+        // Handle blocker immediately instead of waiting for monitor tick
+        const blockedTask = this.taskBoard.getTask(payload.taskId);
+        if (blockedTask) {
+          this.handleBlockedTask(blockedTask).catch((err) => {
+            this.log(`Error handling blocker: ${err instanceof Error ? err.message : err}`);
+          });
+        }
         break;
       }
 
       case MessageType.Question: {
-        this.handleTeamQuestion(message);
+        const qPayload = message.payload as { questionId?: string; question: string };
+        this.log(
+          `Question from ${message.fromAgentId}: ${qPayload.question}`
+        );
+        this.handleTeamQuestion(message).catch((err) => {
+          this.log(`Error handling question: ${err instanceof Error ? err.message : err}`);
+        });
         break;
       }
 
@@ -408,7 +467,7 @@ export class TeamLeadAgent extends Agent {
   }
 
   private async handleTeamQuestion(message: Message): Promise<void> {
-    const payload = message.payload as { question: string };
+    const payload = message.payload as { questionId?: string; question: string };
 
     this.conversationHistory.push({
       role: 'user',
@@ -418,8 +477,10 @@ export class TeamLeadAgent extends Agent {
     const response = await this.callLLM();
 
     this.sendMessage(MessageType.Answer, message.fromAgentId, {
+      questionId: payload.questionId,
       answer: response,
     });
+    this.log(`Answered ${message.fromAgentId}: ${response.slice(0, 200)}`);
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────

@@ -28,9 +28,16 @@ export class FileManager {
     // Check for lock conflicts
     const existingLock = this.locks.get(uriKey);
     if (existingLock && existingLock.agentId !== edit.agentId) {
-      throw new Error(
-        `File ${edit.uri.fsPath} is locked by agent ${existingLock.agentId}`
-      );
+      const lockedSince = existingLock.acquiredAt.toISOString().slice(11, 19);
+      const staleSec = (Date.now() - existingLock.acquiredAt.getTime()) / 1000;
+      // Auto-release stale locks older than 60 seconds (likely from a crashed/paused agent)
+      if (staleSec > 60) {
+        this.locks.delete(uriKey);
+      } else {
+        throw new Error(
+          `File ${vscode.workspace.asRelativePath(edit.uri)} is locked by another agent (${existingLock.agentId}) since ${lockedSince} for task ${existingLock.taskId}. Wait and retry, or use a different file path.`
+        );
+      }
     }
 
     // Acquire lock
@@ -66,13 +73,13 @@ export class FileManager {
           if (edit.range) {
             workspaceEdit.replace(edit.uri, edit.range, edit.content);
           } else {
-            // Full file replacement
-            const doc = await vscode.workspace.openTextDocument(edit.uri);
-            const fullRange = new vscode.Range(
-              doc.positionAt(0),
-              doc.positionAt(doc.getText().length)
-            );
-            workspaceEdit.replace(edit.uri, fullRange, edit.content);
+            // Full file replacement — use delete+create for reliability
+            // (openTextDocument can fail if file isn't open in editor)
+            workspaceEdit.createFile(edit.uri, {
+              overwrite: true,
+              ignoreIfExists: false,
+            });
+            workspaceEdit.insert(edit.uri, new vscode.Position(0, 0), edit.content);
           }
           break;
         }
