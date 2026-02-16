@@ -84,6 +84,35 @@ export abstract class Agent {
     this.log(`Agent stopped: ${this.roleConfig.name}`);
   }
 
+  /**
+   * Pause the agent. Aborts current execution but retains conversation
+   * history so work can resume from context.
+   */
+  pause(): void {
+    this.abortController?.abort();
+    this.state.currentTaskId = null;
+    this.setStatus(AgentStatus.Paused);
+    this.log(`Agent paused: ${this.roleConfig.name}`);
+  }
+
+  /**
+   * Resume a paused agent. Restores to Idle so the scheduler
+   * can dispatch new (or re-queued) tasks to it.
+   */
+  resume(): void {
+    if (
+      this.state.status !== AgentStatus.Paused &&
+      this.state.status !== AgentStatus.Error
+    ) {
+      return;
+    }
+    this.abortController = null;
+    this.state.currentTaskId = null;
+    this.state.blockerDescription = null;
+    this.setStatus(AgentStatus.Idle);
+    this.log(`Agent resumed: ${this.roleConfig.name}`);
+  }
+
   dispose(): void {
     this.stop();
     this._onStateChange.dispose();

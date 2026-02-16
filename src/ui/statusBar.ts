@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { TaskBoard } from '../orchestration/taskBoard';
+import { Scheduler } from '../orchestration/scheduler';
 import { AgentRegistry } from '../agents/registry';
 import { AgentStatus } from '../types';
 
@@ -13,7 +14,8 @@ export class DevCrewStatusBar {
 
   constructor(
     private readonly taskBoard: TaskBoard,
-    private readonly agentRegistry: AgentRegistry
+    private readonly agentRegistry: AgentRegistry,
+    private readonly scheduler?: Scheduler
   ) {
     this.statusItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Left,
@@ -53,17 +55,32 @@ export class DevCrewStatusBar {
     const blockedCount = agents.filter(
       (a) => a.getState().status === AgentStatus.Blocked
     ).length;
+    const isPaused = this.scheduler?.getIsPaused() ?? false;
 
     // Main status
-    this.statusItem.text = `$(organization) DevCrew`;
-    this.statusItem.tooltip = `DevCrew: ${agents.length} agents\n${workingCount} working, ${blockedCount} blocked`;
+    if (isPaused) {
+      this.statusItem.text = `$(debug-pause) DevCrew (Paused)`;
+      this.statusItem.tooltip = `DevCrew: PAUSED — ${agents.length} agents\nUse "DevCrew: Resume Team" to continue`;
+      this.statusItem.backgroundColor = new vscode.ThemeColor(
+        'statusBarItem.warningBackground'
+      );
+    } else {
+      this.statusItem.text = `$(organization) DevCrew`;
+      this.statusItem.tooltip = `DevCrew: ${agents.length} agents\n${workingCount} working, ${blockedCount} blocked`;
+      this.statusItem.backgroundColor = undefined;
+    }
 
     // Progress
     if (stats.total > 0) {
       const pct = Math.round((stats.completed / stats.total) * 100);
       this.progressItem.text = `${stats.completed}/${stats.total} tasks (${pct}%)`;
 
-      if (blockedCount > 0) {
+      if (isPaused && stats.paused > 0) {
+        this.progressItem.text += ` $(debug-pause) ${stats.paused} paused`;
+        this.progressItem.backgroundColor = new vscode.ThemeColor(
+          'statusBarItem.warningBackground'
+        );
+      } else if (blockedCount > 0) {
         this.progressItem.text += ` $(warning) ${blockedCount} blocked`;
         this.progressItem.backgroundColor = new vscode.ThemeColor(
           'statusBarItem.warningBackground'

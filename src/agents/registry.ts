@@ -96,6 +96,18 @@ export class AgentRegistry {
     }
   }
 
+  pauseAll(): void {
+    for (const agent of this.agents.values()) {
+      agent.pause();
+    }
+  }
+
+  resumeAll(): void {
+    for (const agent of this.agents.values()) {
+      agent.resume();
+    }
+  }
+
   disposeAll(): void {
     for (const agent of this.agents.values()) {
       agent.dispose();

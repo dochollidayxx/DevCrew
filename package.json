@@ -29,6 +29,16 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "devcrew.pauseTeam",
+        "title": "DevCrew: Pause Team",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "devcrew.resumeTeam",
+        "title": "DevCrew: Resume Team",
+        "icon": "$(debug-continue)"
+      },
+      {
         "command": "devcrew.assignTask",
         "title": "DevCrew: Assign Task to Team"
       },
@@ -81,6 +91,16 @@
         },
         {
           "command": "devcrew.stopTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        },
+        {
+          "command": "devcrew.pauseTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        },
+        {
+          "command": "devcrew.resumeTeam",
           "when": "view == devcrew-team",
           "group": "navigation"
         }

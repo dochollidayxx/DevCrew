@@ -11,6 +11,7 @@ import { TaskBoard } from './taskBoard';
  */
 export class Scheduler {
   private isRunning = false;
+  private isPaused = false;
   private isTicking = false;
   private schedulerInterval: ReturnType<typeof setInterval> | null = null;
   private activeExecutions: Map<string, Promise<void>> = new Map();
@@ -42,11 +43,43 @@ export class Scheduler {
 
   stop(): void {
     this.isRunning = false;
+    this.isPaused = false;
     if (this.schedulerInterval) {
       clearInterval(this.schedulerInterval);
       this.schedulerInterval = null;
     }
     this.log('Scheduler stopped');
+  }
+
+  /**
+   * Pause dispatching. Running executions continue but no new tasks
+   * will be dispatched. Active tasks are paused on the board.
+   */
+  pause(): void {
+    if (!this.isRunning || this.isPaused) return;
+    this.isPaused = true;
+
+    // Pause all active tasks on the board
+    const pausedCount = this.taskBoard.pauseActiveTasks();
+    this.log(`Scheduler paused (${pausedCount} tasks paused, ${this.activeExecutions.size} executions still in flight)`);
+  }
+
+  /**
+   * Resume dispatching. Paused and failed tasks are moved back to Pending.
+   */
+  resume(): void {
+    if (!this.isRunning || !this.isPaused) return;
+    this.isPaused = false;
+
+    const resumedCount = this.taskBoard.resumePausedTasks(true);
+    this.log(`Scheduler resumed (${resumedCount} tasks requeued)`);
+
+    // Immediately try to dispatch
+    this.tick();
+  }
+
+  getIsPaused(): boolean {
+    return this.isPaused;
   }
 
   private tick(): void {
@@ -62,6 +95,9 @@ export class Scheduler {
   }
 
   private tickInner(): void {
+    // Don't dispatch when paused
+    if (this.isPaused) return;
+
     // Don't exceed parallelism limit
     if (this.activeExecutions.size >= this.maxParallel) {
       return;
@@ -152,11 +188,19 @@ export class Scheduler {
     const execution = agent
       .executeTask(task)
       .then(() => {
-        this.taskBoard.completeTask(task.id);
-        this.log(`Task "${task.title}" completed by ${agent.roleConfig.name}`);
+        // Only mark complete if not paused in the meantime
+        const current = this.taskBoard.getTask(task.id);
+        if (current && current.status !== TaskStatus.Paused) {
+          this.taskBoard.completeTask(task.id);
+          this.log(`Task "${task.title}" completed by ${agent.roleConfig.name}`);
+        }
       })
       .catch((err) => {
-        this.taskBoard.failTask(task.id);
+        // If paused, the task is already in Paused state — don't overwrite
+        const current = this.taskBoard.getTask(task.id);
+        if (current && current.status !== TaskStatus.Paused) {
+          this.taskBoard.failTask(task.id);
+        }
         this.log(
           `Task "${task.title}" failed: ${err instanceof Error ? err.message : err}`
         );

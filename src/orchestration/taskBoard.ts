@@ -214,6 +214,76 @@ export class TaskBoard {
     return this.updateTask(taskId, { status: TaskStatus.Blocked });
   }
 
+  // ─── Pause / Resume ──────────────────────────────────────────────
+
+  pauseTask(taskId: string): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+
+    // Store the pre-pause status so we can restore on resume
+    task.metadata['statusBeforePause'] = task.status;
+    return this.updateTask(taskId, { status: TaskStatus.Paused });
+  }
+
+  resumeTask(taskId: string): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task || task.status !== TaskStatus.Paused) return undefined;
+
+    // Revert to Pending so the scheduler can re-dispatch it cleanly.
+    // Clear assignee so the scheduler picks the best available agent.
+    return this.updateTask(taskId, {
+      status: TaskStatus.Pending,
+      assigneeId: null,
+    });
+  }
+
+  /**
+   * Pause all tasks that are currently in-flight (Assigned, InProgress)
+   * or waiting to run (Pending). Returns the count of paused tasks.
+   */
+  pauseActiveTasks(): number {
+    const pausable: TaskStatus[] = [
+      TaskStatus.Pending,
+      TaskStatus.Assigned,
+      TaskStatus.InProgress,
+      TaskStatus.Blocked,
+    ];
+
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (pausable.includes(task.status)) {
+        this.pauseTask(task.id);
+        count++;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Resume all paused tasks, plus optionally recover tasks that failed
+   * (e.g. due to network errors) so they get another chance.
+   */
+  resumePausedTasks(alsoRecoverFailed = true): number {
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (task.status === TaskStatus.Paused) {
+        this.resumeTask(task.id);
+        count++;
+      } else if (alsoRecoverFailed && task.status === TaskStatus.Failed) {
+        this.updateTask(task.id, {
+          status: TaskStatus.Pending,
+          assigneeId: null,
+        });
+        count++;
+      }
+    }
+    return count;
+  }
+
+  getPausedTasks(): Task[] {
+    return this.getTasksByStatus(TaskStatus.Paused);
+  }
+
   // ─── Statistics ─────────────────────────────────────────────────────
 
   getStats(): {
@@ -223,6 +293,7 @@ export class TaskBoard {
     completed: number;
     failed: number;
     blocked: number;
+    paused: number;
   } {
     const all = this.getAllTasks();
     return {
@@ -236,6 +307,7 @@ export class TaskBoard {
       completed: all.filter((t) => t.status === TaskStatus.Completed).length,
       failed: all.filter((t) => t.status === TaskStatus.Failed).length,
       blocked: all.filter((t) => t.status === TaskStatus.Blocked).length,
+      paused: all.filter((t) => t.status === TaskStatus.Paused).length,
     };
   }
 
