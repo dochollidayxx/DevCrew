@@ -1,0 +1,166 @@
+{
+  "name": "devcrew",
+  "displayName": "DevCrew",
+  "description": "Parallel AI agent team for collaborative software development in VSCode",
+  "version": "0.1.0",
+  "publisher": "devcrew",
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "extensionDependencies": [
+    "github.copilot"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "devcrew.startTeam",
+        "title": "DevCrew: Start Team",
+        "icon": "$(play)"
+      },
+      {
+        "command": "devcrew.stopTeam",
+        "title": "DevCrew: Stop Team",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "devcrew.assignTask",
+        "title": "DevCrew: Assign Task to Team"
+      },
+      {
+        "command": "devcrew.showDashboard",
+        "title": "DevCrew: Show Dashboard"
+      },
+      {
+        "command": "devcrew.teamChat",
+        "title": "DevCrew: Chat with Team Lead"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "devcrew-sidebar",
+          "title": "DevCrew",
+          "icon": "$(organization)"
+        }
+      ]
+    },
+    "views": {
+      "devcrew-sidebar": [
+        {
+          "id": "devcrew-team",
+          "name": "Team"
+        },
+        {
+          "id": "devcrew-tasks",
+          "name": "Task Board"
+        },
+        {
+          "id": "devcrew-activity",
+          "name": "Activity Feed"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "devcrew-team",
+        "contents": "No team is running.\n[Start Team](command:devcrew.startTeam)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "devcrew.startTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        },
+        {
+          "command": "devcrew.stopTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DevCrew",
+      "properties": {
+        "devcrew.team.composition": {
+          "type": "array",
+          "default": [
+            "architect",
+            "frontend",
+            "backend",
+            "tester",
+            "reviewer"
+          ],
+          "items": {
+            "type": "string",
+            "enum": [
+              "architect",
+              "frontend",
+              "backend",
+              "tester",
+              "reviewer",
+              "devops",
+              "security",
+              "docs"
+            ]
+          },
+          "description": "Roles to include in the dev team (Team Lead is always included)"
+        },
+        "devcrew.team.maxParallelAgents": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Maximum number of agents working in parallel"
+        },
+        "devcrew.fileOps.requireApproval": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require user approval before agents write files"
+        },
+        "devcrew.fileOps.autoSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically save files after agent edits"
+        },
+        "devcrew.notifications.level": {
+          "type": "string",
+          "default": "important",
+          "enum": [
+            "all",
+            "important",
+            "errors-only",
+            "none"
+          ],
+          "description": "Notification verbosity level"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack",
+    "watch": "webpack --watch",
+    "package": "webpack --mode production --devtool hidden-source-map",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.93.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0",
+    "eslint": "^8.56.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.3.3",
+    "webpack": "^5.89.0",
+    "webpack-cli": "^5.1.4"
+  }
+}
