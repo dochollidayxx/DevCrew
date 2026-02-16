@@ -481,6 +481,23 @@ export class TeamLeadAgent extends Agent {
     }
   }
 
+  // ─── Pause / Resume ──────────────────────────────────────────────
+
+  override pause(): void {
+    this.stopMonitoring();
+    super.pause();
+  }
+
+  override resume(): void {
+    super.resume();
+    // Restart monitoring if there are outstanding tasks
+    const stats = this.taskBoard.getStats();
+    if (stats.total > stats.completed + stats.failed) {
+      this.startMonitoring();
+      this.log('Monitoring restarted after resume');
+    }
+  }
+
   dispose(): void {
     this.stopMonitoring();
     super.dispose();

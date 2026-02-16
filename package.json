@@ -29,6 +29,16 @@
         "icon": "$(debug-stop)"
       },
       {
+        "command": "devcrew.pauseTeam",
+        "title": "DevCrew: Pause Team",
+        "icon": "$(debug-pause)"
+      },
+      {
+        "command": "devcrew.resumeTeam",
+        "title": "DevCrew: Resume Team",
+        "icon": "$(debug-continue)"
+      },
+      {
         "command": "devcrew.assignTask",
         "title": "DevCrew: Assign Task to Team"
       },
@@ -81,6 +91,16 @@
         },
         {
           "command": "devcrew.stopTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        },
+        {
+          "command": "devcrew.pauseTeam",
+          "when": "view == devcrew-team",
+          "group": "navigation"
+        },
+        {
+          "command": "devcrew.resumeTeam",
           "when": "view == devcrew-team",
           "group": "navigation"
         }
@@ -150,16 +170,20 @@
     "watch": "webpack --watch",
     "package": "webpack --mode production --devtool hidden-source-map",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.93.0",
     "@typescript-eslint/eslint-plugin": "^6.15.0",
     "@typescript-eslint/parser": "^6.15.0",
+    "@vitest/coverage-v8": "^2.1.0",
     "eslint": "^8.56.0",
     "ts-loader": "^9.5.1",
     "typescript": "^5.3.3",
+    "vitest": "^2.1.0",
     "webpack": "^5.89.0",
     "webpack-cli": "^5.1.4"
   }

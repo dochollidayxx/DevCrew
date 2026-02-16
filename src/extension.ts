@@ -90,7 +90,7 @@ export function activate(context: vscode.ExtensionContext): void {
         const teamTreeView = new TeamTreeView(agentRegistry);
         const taskTreeView = new TaskTreeView(taskBoard);
         const activityTreeView = new ActivityTreeView(messageBus);
-        const statusBar = new DevCrewStatusBar(taskBoard, agentRegistry);
+        const statusBar = new DevCrewStatusBar(taskBoard, agentRegistry, scheduler);
 
         // Register tree views
         context.subscriptions.push(
@@ -161,6 +161,54 @@ export function activate(context: vscode.ExtensionContext): void {
       devCrew = null;
 
       vscode.window.showInformationMessage('DevCrew team stopped.');
+    })
+  );
+
+  // ─── Pause Team Command ─────────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('devcrew.pauseTeam', () => {
+      if (!devCrew) {
+        vscode.window.showWarningMessage('No DevCrew team is running.');
+        return;
+      }
+
+      if (devCrew.scheduler.getIsPaused()) {
+        vscode.window.showWarningMessage('DevCrew team is already paused.');
+        return;
+      }
+
+      devCrew.agentRegistry.pauseAll();
+      devCrew.scheduler.pause();
+
+      const stats = devCrew.taskBoard.getStats();
+      vscode.window.showInformationMessage(
+        `DevCrew paused. ${stats.paused} tasks shelved, ${stats.completed} already completed. Use "DevCrew: Resume Team" to continue.`
+      );
+    })
+  );
+
+  // ─── Resume Team Command ───────────────────────────────────────
+  context.subscriptions.push(
+    vscode.commands.registerCommand('devcrew.resumeTeam', () => {
+      if (!devCrew) {
+        vscode.window.showWarningMessage('No DevCrew team is running.');
+        return;
+      }
+
+      if (!devCrew.scheduler.getIsPaused()) {
+        vscode.window.showWarningMessage(
+          'DevCrew team is not paused.'
+        );
+        return;
+      }
+
+      devCrew.agentRegistry.resumeAll();
+      devCrew.scheduler.resume();
+
+      const stats = devCrew.taskBoard.getStats();
+      vscode.window.showInformationMessage(
+        `DevCrew resumed! ${stats.pending} tasks queued for dispatch, ${stats.completed} already completed.`
+      );
     })
   );
 
