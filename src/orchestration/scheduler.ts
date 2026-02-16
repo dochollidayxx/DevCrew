@@ -11,6 +11,7 @@ import { TaskBoard } from './taskBoard';
  */
 export class Scheduler {
   private isRunning = false;
+  private isTicking = false;
   private schedulerInterval: ReturnType<typeof setInterval> | null = null;
   private activeExecutions: Map<string, Promise<void>> = new Map();
   private outputChannel: vscode.OutputChannel;
@@ -49,6 +50,18 @@ export class Scheduler {
   }
 
   private tick(): void {
+    // Guard against reentrant calls from onTaskChange during dispatch
+    if (this.isTicking) return;
+    this.isTicking = true;
+
+    try {
+      this.tickInner();
+    } finally {
+      this.isTicking = false;
+    }
+  }
+
+  private tickInner(): void {
     // Don't exceed parallelism limit
     if (this.activeExecutions.size >= this.maxParallel) {
       return;
@@ -81,7 +94,7 @@ export class Scheduler {
       // Assign and execute
       this.dispatch(agent, task);
     }
-  }
+  } // end tickInner
 
   private findBestAgent(task: Task, idleAgents: Agent[]): Agent | null {
     if (idleAgents.length === 0) return null;
