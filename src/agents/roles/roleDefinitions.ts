@@ -1,6 +1,10 @@
-import { AgentRole, AgentRoleConfig } from '../../types';
+import { AgentRoleConfig } from '../../types';
 
-export const ROLE_DEFINITIONS: Record<AgentRole, AgentRoleConfig> = {
+/**
+ * Built-in role templates. The Team Lead can use these as-is, customize them,
+ * or define entirely new roles dynamically.
+ */
+export const ROLE_DEFINITIONS: Record<string, AgentRoleConfig> = {
   'team-lead': {
     role: 'team-lead',
     name: 'Team Lead',
@@ -233,3 +237,24 @@ Before working with files, use list_files to discover the project structure.`,
     icon: '$(book)',
   },
 };
+
+/**
+ * Look up a built-in role template by role name.
+ * Returns undefined if no template exists for the given role.
+ */
+export function getRoleTemplate(role: string): AgentRoleConfig | undefined {
+  return ROLE_DEFINITIONS[role];
+}
+
+/**
+ * Returns a summary of all available role templates for use in LLM prompts.
+ */
+export function getRoleTemplateSummary(): string {
+  return Object.entries(ROLE_DEFINITIONS)
+    .filter(([role]) => role !== 'team-lead')
+    .map(
+      ([role, config]) =>
+        `- **${role}**: ${config.description}\n  Capabilities: ${config.capabilities.join(', ')}`
+    )
+    .join('\n');
+}

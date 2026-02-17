@@ -20,7 +20,8 @@ export class Scheduler {
   constructor(
     private readonly agentRegistry: AgentRegistry,
     private readonly taskBoard: TaskBoard,
-    private readonly maxParallel: number
+    private readonly maxParallel: number,
+    private readonly maxIterationsPerTask: number = 50
   ) {
     this.outputChannel = vscode.window.createOutputChannel(
       'DevCrew: Scheduler'
@@ -95,88 +96,32 @@ export class Scheduler {
   }
 
   private tickInner(): void {
-    // Don't dispatch when paused
     if (this.isPaused) return;
+    if (this.activeExecutions.size >= this.maxParallel) return;
 
-    // Don't exceed parallelism limit
-    if (this.activeExecutions.size >= this.maxParallel) {
-      return;
-    }
-
-    // Find ready tasks (dependencies met, not assigned)
     const readyTasks = this.taskBoard.getReadyTasks();
     if (readyTasks.length === 0) return;
 
-    // Sort by priority (lower number = higher priority)
     readyTasks.sort((a, b) => a.priority - b.priority);
 
-    // Find idle agents
-    const idleAgents = this.agentRegistry
-      .getSpecialists()
-      .filter((a) => a.getState().status === AgentStatus.Idle);
-
-    // Match tasks to agents
     for (const task of readyTasks) {
       if (this.activeExecutions.size >= this.maxParallel) break;
-      if (idleAgents.length === 0) break;
 
-      const agent = this.findBestAgent(task, idleAgents);
-      if (!agent) continue;
+      if (!task.assigneeId) {
+        this.log(`Warning: task "${task.title}" has no assignee, skipping`);
+        continue;
+      }
 
-      // Remove from idle pool
-      const idx = idleAgents.indexOf(agent);
-      idleAgents.splice(idx, 1);
+      const agent = this.agentRegistry.getAgent(task.assigneeId);
+      if (!agent) {
+        this.log(`Warning: agent ${task.assigneeId} not found for task "${task.title}"`);
+        continue;
+      }
 
-      // Assign and execute
+      if (agent.getState().status !== AgentStatus.Idle) continue;
+
       this.dispatch(agent, task);
     }
-  } // end tickInner
-
-  private findBestAgent(task: Task, idleAgents: Agent[]): Agent | null {
-    if (idleAgents.length === 0) return null;
-
-    // If task is already assigned to a specific agent, use that one
-    if (task.assigneeId) {
-      const assigned = idleAgents.find((a) => a.id === task.assigneeId);
-      if (assigned) return assigned;
-    }
-
-    // Try to match by role affinity based on task metadata
-    const preferredRole = task.metadata['preferredRole'] as string | undefined;
-    if (preferredRole) {
-      const roleMatch = idleAgents.find(
-        (a) => a.roleConfig.role === preferredRole
-      );
-      if (roleMatch) return roleMatch;
-    }
-
-    // Heuristic: match keywords in task title/description to agent capabilities
-    const taskText = `${task.title} ${task.description}`.toLowerCase();
-    let bestAgent: Agent | null = null;
-    let bestScore = -1;
-
-    for (const agent of idleAgents) {
-      let score = 0;
-      for (const capability of agent.roleConfig.capabilities) {
-        const keywords = capability.toLowerCase().split(/\s+/);
-        for (const kw of keywords) {
-          if (taskText.includes(kw)) {
-            score++;
-          }
-        }
-      }
-
-      // Bonus for fewer completed tasks (load balancing)
-      const completedCount = agent.getState().completedTaskIds.length;
-      score -= completedCount * 0.1;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestAgent = agent;
-      }
-    }
-
-    return bestAgent ?? idleAgents[0];
   }
 
   private enrichTaskWithDependencies(task: Task): Task {
@@ -220,7 +165,7 @@ export class Scheduler {
     const enrichedTask = this.enrichTaskWithDependencies(task);
 
     const execution = agent
-      .executeTask(enrichedTask)
+      .executeTask(enrichedTask, this.maxIterationsPerTask)
       .then((summary) => {
         // Only mark complete if not paused in the meantime
         const current = this.taskBoard.getTask(task.id);

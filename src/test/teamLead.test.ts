@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TeamLeadAgent } from '../agents/teamLeadAgent';
+import { AgentRegistry } from '../agents/registry';
 import { ROLE_DEFINITIONS } from '../agents/roles/roleDefinitions';
 import { MessageBus } from '../communication/messageBus';
 import { FileManager } from '../fileops/fileManager';
@@ -12,10 +13,16 @@ import {
 } from '../types';
 
 function createMockLLM(responseContent = '<action type="complete">Done</action>'): LLMService {
+  const sendMessages = vi.fn().mockResolvedValue(responseContent);
   return {
     modelName: 'test-model',
-    sendMessages: vi.fn().mockResolvedValue(responseContent),
+    sendMessages,
     streamMessages: vi.fn(),
+    streamWithProgress: vi.fn().mockImplementation(async (messages: unknown[], onChunk?: (chunk: string, accumulated: string) => void) => {
+      const result = await sendMessages(messages);
+      onChunk?.(result, result);
+      return result;
+    }),
   };
 }
 
@@ -24,6 +31,7 @@ describe('TeamLeadAgent - Blocker Handling & Result Storage', () => {
   let fileManager: FileManager;
   let taskBoard: TaskBoard;
   let mockLLM: LLMService;
+  let registry: AgentRegistry;
   let teamLead: TeamLeadAgent;
 
   beforeEach(() => {
@@ -31,18 +39,21 @@ describe('TeamLeadAgent - Blocker Handling & Result Storage', () => {
     fileManager = new FileManager(false, false);
     taskBoard = new TaskBoard();
     mockLLM = createMockLLM();
+    registry = new AgentRegistry(messageBus, fileManager, taskBoard, mockLLM);
     teamLead = new TeamLeadAgent(
       ROLE_DEFINITIONS['team-lead'],
       messageBus,
       fileManager,
       taskBoard,
-      mockLLM
+      mockLLM,
+      registry
     );
     teamLead.start();
   });
 
   afterEach(() => {
     teamLead.dispose();
+    registry.dispose();
     messageBus.dispose();
     fileManager.dispose();
     taskBoard.dispose();

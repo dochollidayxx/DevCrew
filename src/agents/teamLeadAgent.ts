@@ -9,22 +9,24 @@ import {
   TaskPriority,
   TaskStatus,
 } from '../types';
-import { Agent } from './agent';
+import { Agent, AgentAction } from './agent';
+import { AgentRegistry } from './registry';
 import { MessageBus } from '../communication/messageBus';
 import { FileManager } from '../fileops/fileManager';
 import { TaskBoard } from '../orchestration/taskBoard';
+import { getRoleTemplate, getRoleTemplateSummary } from './roles/roleDefinitions';
 
 /**
  * The Team Lead is the orchestrating agent. It:
- * - Receives user requests and decomposes them into tasks
- * - Assigns tasks to specialists based on their roles
+ * - Receives user requests and dynamically staffs the team
+ * - Decomposes requests into tasks and assigns them to specialists
  * - Monitors progress and resolves blockers
  * - Integrates work from multiple agents
  * - Communicates status back to the user
  */
 export class TeamLeadAgent extends Agent {
-  private teamMembers: Agent[] = [];
   private readonly taskBoard: TaskBoard;
+  private readonly registry: AgentRegistry;
   private integrationQueue: string[] = [];
   private integrationCompleted = false;
 
@@ -33,28 +35,44 @@ export class TeamLeadAgent extends Agent {
     messageBus: MessageBus,
     fileManager: FileManager,
     taskBoard: TaskBoard,
-    llm: LLMService
+    llm: LLMService,
+    registry: AgentRegistry
   ) {
     super(roleConfig, messageBus, fileManager, llm);
     this.taskBoard = taskBoard;
-  }
-
-  setTeamMembers(members: Agent[]): void {
-    this.teamMembers = members;
+    this.registry = registry;
   }
 
   // ─── User-Facing Entry Point ──────────────────────────────────────────
 
   /**
+   * Progress callback for streaming updates during handleUserRequest.
+   * Set by the caller (extension.ts) before calling handleUserRequest.
+   */
+  onProgress: ((message: string) => void) | null = null;
+
+  /**
+   * Completion callback invoked when all tasks are done (or failed/blocked).
+   * Set by extension.ts to open the SummaryPanel.
+   */
+  onComplete: (() => void) | null = null;
+
+  /**
    * Main entry point: user gives a high-level request, Team Lead
-   * decomposes it into tasks and orchestrates the team.
+   * dynamically staffs the team and decomposes work into tasks.
+   *
+   * Split into two streaming LLM calls:
+   *   1. Staffing — analyze request and create agents
+   *   2. Decomposition — break work into tasks assigned to those agents
    */
   async handleUserRequest(request: string): Promise<void> {
     this.setStatus(AgentStatus.Working);
     this.log(`Received user request: ${request}`);
 
-    // Build context about the team for the LLM
-    const teamContext = this.buildTeamContext();
+    // ── Phase 1: Staffing ──────────────────────────────────────────────
+    this.reportProgress('Phase 1/2: Analyzing request and staffing team...');
+
+    const roleTemplateSummary = getRoleTemplateSummary();
 
     this.conversationHistory.push({
       role: 'user',
@@ -62,11 +80,74 @@ export class TeamLeadAgent extends Agent {
         `## User Request`,
         request,
         '',
-        `## Your Team`,
+        `## Your Job: Staffing`,
+        `Analyze this request and decide what team members you need.`,
+        '',
+        `Available role templates (you can use as-is, customize, or create new ones):`,
+        roleTemplateSummary,
+        '',
+        `For each agent you need, output an <agent> block:`,
+        `<agent>`,
+        `  <role>unique-role-id</role>`,
+        `  <name>Display Name</name>`,
+        `  <description>What this agent does</description>`,
+        `  <prompt>Detailed system prompt for this specialist...</prompt>`,
+        `  <capabilities>comma, separated, capabilities</capabilities>`,
+        `</agent>`,
+        '',
+        `For built-in role templates, you only need to provide the <role> tag — the rest will be filled from the template. Add other tags only to override template defaults.`,
+        '',
+        `After your agent blocks, include any questions for the user in <question> tags.`,
+      ].join('\n'),
+    });
+
+    let lastReportedAgentCount = 0;
+    const staffingResponse = await this.callLLMStreaming(
+      (chunk, accumulated) => {
+        // Count agents parsed so far for progress — only report when count changes
+        const agentCount = (accumulated.match(/<\/agent>/g) || []).length;
+        if (agentCount > 0 && agentCount !== lastReportedAgentCount) {
+          lastReportedAgentCount = agentCount;
+          this.reportProgress(`Phase 1/2: Identified ${agentCount} team member${agentCount > 1 ? 's' : ''}...`);
+        }
+      }
+    );
+
+    // Parse and create agents
+    const parsedAgents = this.parseAgentBlocks(staffingResponse);
+    for (const agentDef of parsedAgents) {
+      const roleConfig = this.buildRoleConfig(agentDef);
+      const agent = this.registry.createAgent(roleConfig);
+      this.log(`Created agent: ${agent.roleConfig.name} (${agent.roleConfig.role})`);
+
+      // Notify activity feed
+      this.sendMessage(MessageType.AgentCreated, null, {
+        agentId: agent.id,
+        role: agent.roleConfig.role,
+        name: agent.roleConfig.name,
+      });
+    }
+
+    this.reportProgress(`Staffed ${parsedAgents.length} agent${parsedAgents.length !== 1 ? 's' : ''}. Phase 2/2: Decomposing tasks...`);
+
+    // Handle any questions from staffing phase
+    const staffingQuestions = this.parseQuestions(staffingResponse);
+    if (staffingQuestions.length > 0) {
+      await this.askUserQuestions(staffingQuestions);
+    }
+
+    // ── Phase 2: Task Decomposition ────────────────────────────────────
+    const teamContext = this.buildTeamContext();
+
+    this.conversationHistory.push({
+      role: 'user',
+      content: [
+        `## Team Created`,
+        `You now have these team members:`,
         teamContext,
         '',
-        `## Instructions`,
-        `Analyze this request and decompose it into concrete tasks.`,
+        `## Your Job: Task Decomposition`,
+        `Now decompose the original request into concrete tasks for your team.`,
         '',
         `IMPORTANT — phasing rules:`,
         `1. ALWAYS start with an architect task that defines the system design, interfaces, data models, and file structure. This task must produce concrete artifacts (type definitions, API contracts, schemas) — not just an assessment.`,
@@ -76,7 +157,7 @@ export class TeamLeadAgent extends Agent {
         '',
         `For each task, specify:`,
         `- A clear title and description (include which files to read and which to create)`,
-        `- Which team member role should handle it (${this.teamMembers.map((m) => m.roleConfig.role).join(', ')})`,
+        `- Which role should handle it (must match a role from the team above)`,
         `- Dependencies on other tasks (by title reference)`,
         `- Priority: critical, high, medium, or low`,
         '',
@@ -89,18 +170,25 @@ export class TeamLeadAgent extends Agent {
         `  <depends_on>Title of dependency task</depends_on>`,
         `</task>`,
         '',
-        `After your task list, add any questions for the user in <question> tags.`,
-        `If you need clarification before proceeding, ask now.`,
+        `Add any remaining questions in <question> tags.`,
       ].join('\n'),
     });
 
-    const response = await this.callLLM();
+    let lastReportedTaskCount = 0;
+    const decompositionResponse = await this.callLLMStreaming(
+      (chunk, accumulated) => {
+        const taskCount = (accumulated.match(/<\/task>/g) || []).length;
+        if (taskCount > 0 && taskCount !== lastReportedTaskCount) {
+          lastReportedTaskCount = taskCount;
+          this.reportProgress(`Phase 2/2: Planned ${taskCount} task${taskCount > 1 ? 's' : ''} so far...`);
+        }
+      }
+    );
 
-    // Parse tasks from response
-    const parsedTasks = this.parseTaskPlan(response);
-    const questions = this.parseQuestions(response);
+    // Parse tasks and questions
+    const parsedTasks = this.parseTaskPlan(decompositionResponse);
+    const questions = this.parseQuestions(decompositionResponse);
 
-    // If the LLM has questions, ask the user first
     if (questions.length > 0) {
       await this.askUserQuestions(questions);
     }
@@ -115,8 +203,73 @@ export class TeamLeadAgent extends Agent {
       tasks: createdTasks.map((t) => ({ id: t.id, title: t.title })),
     });
 
+    this.reportProgress(`Created ${createdTasks.length} tasks. Team is working...`);
+
     // Start monitoring
     this.startMonitoring();
+  }
+
+  private reportProgress(message: string): void {
+    this.onProgress?.(message);
+    this.sendMessage(MessageType.StatusUpdate, null, {
+      message,
+      phase: 'planning',
+    });
+  }
+
+  // ─── Agent Staffing ─────────────────────────────────────────────────
+
+  private parseAgentBlocks(response: string): ParsedAgent[] {
+    const agents: ParsedAgent[] = [];
+    const agentRegex = /<agent>([^]*?)<\/agent>/g;
+    let match;
+
+    while ((match = agentRegex.exec(response)) !== null) {
+      const block = match[1];
+
+      const role = this.extractTag(block, 'role');
+      if (!role) continue;
+
+      agents.push({
+        role,
+        name: this.extractTag(block, 'name'),
+        description: this.extractTag(block, 'description'),
+        prompt: this.extractTag(block, 'prompt'),
+        capabilities: this.extractTag(block, 'capabilities'),
+      });
+    }
+
+    return agents;
+  }
+
+  private buildRoleConfig(parsed: ParsedAgent): AgentRoleConfig {
+    const template = getRoleTemplate(parsed.role);
+
+    if (template) {
+      // Use template as base, override with any provided customizations
+      return {
+        role: parsed.role,
+        name: parsed.name ?? template.name,
+        description: parsed.description ?? template.description,
+        systemPrompt: parsed.prompt ?? template.systemPrompt,
+        capabilities: parsed.capabilities
+          ? parsed.capabilities.split(',').map((c) => c.trim()).filter(Boolean)
+          : template.capabilities,
+        icon: template.icon,
+      };
+    }
+
+    // Fully custom role — no template
+    return {
+      role: parsed.role,
+      name: parsed.name ?? parsed.role,
+      description: parsed.description ?? '',
+      systemPrompt: parsed.prompt ?? '',
+      capabilities: parsed.capabilities
+        ? parsed.capabilities.split(',').map((c) => c.trim()).filter(Boolean)
+        : [],
+      icon: '$(symbol-misc)',
+    };
   }
 
   // ─── Task Decomposition ───────────────────────────────────────────────
@@ -146,31 +299,53 @@ export class TeamLeadAgent extends Agent {
     const createdTasks: Task[] = [];
     const titleToId: Map<string, string> = new Map();
 
-    // First pass: create all tasks
+    // Single pass: create each task with its resolved dependsOn array.
+    // Dependencies on earlier tasks are resolved immediately; forward
+    // references (dependency declared before the depended-on task) are
+    // collected and patched silently after all tasks exist.
+    const forwardRefs: Array<{ task: Task; depTitle: string }> = [];
+
     for (const pt of parsedTasks) {
+      const agent = this.findAgentForRole(pt.role);
+
+      // Resolve dependencies that already exist
+      const resolvedDeps: string[] = [];
+      for (const depTitle of pt.dependsOn) {
+        const depId = titleToId.get(depTitle.toLowerCase());
+        if (depId) {
+          resolvedDeps.push(depId);
+        }
+        // else: forward reference — will patch after all tasks are created
+      }
+
       const task = this.taskBoard.createTask({
         title: pt.title,
         description: pt.description,
         priority: this.parsePriority(pt.priority),
-        assigneeId: this.findAgentForRole(pt.role)?.id ?? null,
+        assigneeId: agent?.id ?? null,
+        dependsOn: resolvedDeps,
       });
 
-      // Store preferred role in metadata
-      task.metadata['preferredRole'] = pt.role;
       titleToId.set(pt.title.toLowerCase(), task.id);
       createdTasks.push(task);
+
+      // Track any forward references for silent fix-up
+      for (const depTitle of pt.dependsOn) {
+        if (!titleToId.has(depTitle.toLowerCase()) || !resolvedDeps.includes(titleToId.get(depTitle.toLowerCase())!)) {
+          // Only track titles that weren't already resolved
+          if (!titleToId.has(depTitle.toLowerCase())) {
+            forwardRefs.push({ task, depTitle });
+          }
+        }
+      }
     }
 
-    // Second pass: wire up dependencies by title reference
-    for (let i = 0; i < parsedTasks.length; i++) {
-      const pt = parsedTasks[i];
-      const task = createdTasks[i];
-
-      for (const depTitle of pt.dependsOn) {
-        const depId = titleToId.get(depTitle.toLowerCase());
-        if (depId) {
-          this.taskBoard.addDependency(task.id, depId);
-        }
+    // Silent fix-up for forward references: push directly to task.dependsOn
+    // without calling addDependency() to avoid firing events mid-wiring
+    for (const { task, depTitle } of forwardRefs) {
+      const depId = titleToId.get(depTitle.toLowerCase());
+      if (depId && !task.dependsOn.includes(depId)) {
+        task.dependsOn.push(depId);
       }
     }
 
@@ -178,7 +353,58 @@ export class TeamLeadAgent extends Agent {
   }
 
   private findAgentForRole(role: string): Agent | undefined {
-    return this.teamMembers.find((m) => m.roleConfig.role === role);
+    return this.registry.getAgentByRole(role);
+  }
+
+  // ─── Mid-Run Agent Management ──────────────────────────────────────
+
+  protected override async executeAction(action: AgentAction, task: Task): Promise<string> {
+    if (action.type === 'create_agent') {
+      return this.handleCreateAgent(action);
+    }
+    if (action.type === 'remove_agent') {
+      return this.handleRemoveAgent(action);
+    }
+    return super.executeAction(action, task);
+  }
+
+  private handleCreateAgent(action: {
+    role: string;
+    name: string;
+    description: string;
+    prompt: string;
+    capabilities: string[];
+  }): string {
+    const existing = this.registry.getAgentByRole(action.role);
+    if (existing) {
+      return `Agent with role "${action.role}" already exists (${existing.id}).`;
+    }
+
+    const roleConfig = this.buildRoleConfig({
+      role: action.role,
+      name: action.name || null,
+      description: action.description || null,
+      prompt: action.prompt || null,
+      capabilities: action.capabilities?.join(', ') || null,
+    });
+
+    const agent = this.registry.createAgent(roleConfig);
+    this.log(`Created agent mid-run: ${agent.roleConfig.name} (${agent.roleConfig.role})`);
+    return `Agent created: ${agent.roleConfig.name} (${agent.roleConfig.role}, id=${agent.id})`;
+  }
+
+  private handleRemoveAgent(action: { role: string }): string {
+    const agent = this.registry.getAgentByRole(action.role);
+    if (!agent) {
+      return `No agent found with role "${action.role}".`;
+    }
+
+    const removed = this.registry.removeAgent(agent.id);
+    if (removed) {
+      this.log(`Removed agent: ${agent.roleConfig.name} (${action.role})`);
+      return `Agent removed: ${agent.roleConfig.name} (${action.role})`;
+    }
+    return `Could not remove agent with role "${action.role}".`;
   }
 
   // ─── Monitoring Loop ──────────────────────────────────────────────────
@@ -249,6 +475,7 @@ export class TeamLeadAgent extends Agent {
         `2. Reassign to a different agent`,
         `3. Break into smaller tasks`,
         `4. Ask the user for help`,
+        `5. Create a new specialist agent to help (use <action type="create_agent">)`,
         '',
         `Respond with a <directive> tag for the agent, or a <question> tag for the user.`,
       ].join('\n'),
@@ -376,14 +603,19 @@ export class TeamLeadAgent extends Agent {
   }
 
   private async reportFinalStatus(): Promise<void> {
-    const stats = this.taskBoard.getStats();
-    const summary = [
-      `DevCrew task completed.`,
-      `Results: ${stats.completed} completed, ${stats.failed} failed, ${stats.blocked} blocked out of ${stats.total} total tasks.`,
-    ].join(' ');
-
-    vscode.window.showInformationMessage(summary);
     this.setStatus(AgentStatus.Done);
+
+    if (this.onComplete) {
+      this.onComplete();
+    } else {
+      // Fallback: show a simple notification if no callback is wired
+      const stats = this.taskBoard.getStats();
+      const summary = [
+        `DevCrew task completed.`,
+        `Results: ${stats.completed} completed, ${stats.failed} failed, ${stats.blocked} blocked out of ${stats.total} total tasks.`,
+      ].join(' ');
+      vscode.window.showInformationMessage(summary);
+    }
   }
 
   // ─── Message Handling ─────────────────────────────────────────────────
@@ -494,8 +726,23 @@ export class TeamLeadAgent extends Agent {
     return response;
   }
 
+  private async callLLMStreaming(
+    onChunk?: (chunk: string, accumulated: string) => void
+  ): Promise<string> {
+    const response = await this.llm.streamWithProgress(
+      this.conversationHistory,
+      onChunk ?? (() => {}),
+    );
+    this.conversationHistory.push({
+      role: 'assistant',
+      content: response,
+    });
+    return response;
+  }
+
   private buildTeamContext(): string {
-    return this.teamMembers
+    return this.registry
+      .getSpecialists()
       .map(
         (m) =>
           `- **${m.roleConfig.name}** (${m.roleConfig.role}): ${m.roleConfig.description}\n  Capabilities: ${m.roleConfig.capabilities.join(', ')}`
@@ -563,6 +810,14 @@ export class TeamLeadAgent extends Agent {
     this.stopMonitoring();
     super.dispose();
   }
+}
+
+interface ParsedAgent {
+  role: string;
+  name: string | null;
+  description: string | null;
+  prompt: string | null;
+  capabilities: string | null;
 }
 
 interface ParsedTask {

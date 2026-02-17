@@ -1,24 +1,23 @@
 import * as vscode from 'vscode';
-import { AgentRole, DevCrewConfig } from '../types';
+import { DevCrewConfig } from '../types';
 
 /**
  * Reads DevCrew configuration from VSCode settings and provides
  * a typed, validated config object. LLM is handled via VSCode's
  * built-in Language Model API, so no API key config needed.
+ *
+ * Note: Team composition is no longer configured here — the Team Lead
+ * dynamically creates agents based on the user's request.
  */
 export function getConfig(): DevCrewConfig {
   const config = vscode.workspace.getConfiguration('devcrew');
 
   return {
     team: {
-      composition: config.get<AgentRole[]>('team.composition', [
-        'architect',
-        'frontend',
-        'backend',
-        'tester',
-        'reviewer',
-      ]),
       maxParallelAgents: config.get<number>('team.maxParallelAgents', 3),
+    },
+    agent: {
+      maxIterationsPerTask: config.get<number>('agent.maxIterationsPerTask', 50),
     },
     fileOps: {
       requireApproval: config.get<boolean>('fileOps.requireApproval', true),
@@ -36,12 +35,6 @@ export function getConfig(): DevCrewConfig {
 /**
  * Validates configuration and returns a list of issues.
  */
-export function validateConfig(config: DevCrewConfig): string[] {
-  const issues: string[] = [];
-
-  if (config.team.composition.length === 0) {
-    issues.push('Team composition is empty. Add at least one role.');
-  }
-
-  return issues;
+export function validateConfig(_config: DevCrewConfig): string[] {
+  return [];
 }

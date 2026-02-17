@@ -1,4 +1,5 @@
-import { AgentRole, LLMService } from '../types';
+import * as vscode from 'vscode';
+import { AgentRoleConfig, LLMService } from '../types';
 import { Agent } from './agent';
 import { SpecialistAgent } from './specialistAgent';
 import { TeamLeadAgent } from './teamLeadAgent';
@@ -8,11 +9,19 @@ import { FileManager } from '../fileops/fileManager';
 import { TaskBoard } from '../orchestration/taskBoard';
 
 /**
- * Creates and manages agent instances based on the configured team composition.
+ * Dynamic agent registry. At startup only the Team Lead is created.
+ * The Team Lead then creates specialist agents on-demand via
+ * createAgent() based on what the task requires.
  */
 export class AgentRegistry {
   private agents: Map<string, Agent> = new Map();
   private teamLead: TeamLeadAgent | null = null;
+
+  private readonly _onAgentAdded = new vscode.EventEmitter<Agent>();
+  readonly onAgentAdded = this._onAgentAdded.event;
+
+  private readonly _onAgentRemoved = new vscode.EventEmitter<Agent>();
+  readonly onAgentRemoved = this._onAgentRemoved.event;
 
   constructor(
     private readonly messageBus: MessageBus,
@@ -22,46 +31,59 @@ export class AgentRegistry {
   ) {}
 
   /**
-   * Build the team from a list of roles. Team Lead is always created.
+   * Bootstrap the team — creates only the Team Lead.
+   * Specialist agents are created dynamically by the Team Lead later.
    */
-  buildTeam(roles: AgentRole[]): Map<string, Agent> {
+  buildTeam(): void {
     this.disposeAll();
 
-    // Always create the Team Lead
     const leadConfig = ROLE_DEFINITIONS['team-lead'];
     this.teamLead = new TeamLeadAgent(
       leadConfig,
       this.messageBus,
       this.fileManager,
       this.taskBoard,
-      this.llm
+      this.llm,
+      this // pass registry so Team Lead can create/remove agents
     );
     this.agents.set(this.teamLead.id, this.teamLead);
     this.messageBus.registerAlias('team-lead', this.teamLead.id);
+  }
 
-    // Create specialist agents for each configured role
-    for (const role of roles) {
-      if (role === 'team-lead') continue; // Already created
+  /**
+   * Dynamically create a specialist agent with the given role config.
+   * The agent is started immediately and registered on the message bus.
+   */
+  createAgent(roleConfig: AgentRoleConfig): Agent {
+    const agent = new SpecialistAgent(
+      roleConfig,
+      this.messageBus,
+      this.fileManager,
+      this.llm
+    );
 
-      const roleConfig = ROLE_DEFINITIONS[role];
-      if (!roleConfig) {
-        continue;
-      }
+    this.agents.set(agent.id, agent);
+    this.messageBus.registerAlias(roleConfig.role, agent.id);
+    agent.start();
 
-      const agent = new SpecialistAgent(
-        roleConfig,
-        this.messageBus,
-        this.fileManager,
-        this.llm
-      );
-      this.agents.set(agent.id, agent);
-      this.messageBus.registerAlias(role, agent.id);
-    }
+    this._onAgentAdded.fire(agent);
+    return agent;
+  }
 
-    // Give the Team Lead knowledge of its team
-    this.teamLead.setTeamMembers(this.getSpecialists());
+  /**
+   * Remove and dispose a specialist agent.
+   * Returns true if the agent was found and removed.
+   */
+  removeAgent(agentId: string): boolean {
+    const agent = this.agents.get(agentId);
+    if (!agent || agent === this.teamLead) return false;
 
-    return this.agents;
+    this.messageBus.unregisterAlias(agent.roleConfig.role);
+    agent.dispose();
+    this.agents.delete(agentId);
+
+    this._onAgentRemoved.fire(agent);
+    return true;
   }
 
   getTeamLead(): TeamLeadAgent | null {
@@ -82,7 +104,7 @@ export class AgentRegistry {
     );
   }
 
-  getAgentByRole(role: AgentRole): Agent | undefined {
+  getAgentByRole(role: string): Agent | undefined {
     return this.getAllAgents().find((a) => a.roleConfig.role === role);
   }
 
@@ -116,5 +138,11 @@ export class AgentRegistry {
     }
     this.agents.clear();
     this.teamLead = null;
+  }
+
+  dispose(): void {
+    this.disposeAll();
+    this._onAgentAdded.dispose();
+    this._onAgentRemoved.dispose();
   }
 }

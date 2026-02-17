@@ -78,6 +78,29 @@ export class VSCodeLLMService implements LLMService {
     return response.text;
   }
 
+  async streamWithProgress(
+    messages: LLMMessage[],
+    onChunk: (chunk: string, accumulated: string) => void,
+    token?: vscode.CancellationToken
+  ): Promise<string> {
+    if (!this.model) {
+      await this.initialize();
+    }
+
+    const vsMessages = this.convertMessages(messages);
+    const cancellation = token ?? new vscode.CancellationTokenSource().token;
+
+    const response = await this.model!.sendRequest(vsMessages, {}, cancellation);
+
+    let accumulated = '';
+    for await (const chunk of response.text) {
+      accumulated += chunk;
+      onChunk(chunk, accumulated);
+    }
+
+    return accumulated;
+  }
+
   /**
    * Convert our internal message format to vscode.LanguageModelChatMessage.
    */

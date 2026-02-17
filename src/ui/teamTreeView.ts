@@ -121,8 +121,12 @@ export class TeamTreeView
         return 'Waiting on Dependency';
       case AgentStatus.Error:
         return 'Error';
+      case AgentStatus.Paused:
+        return 'Paused';
       case AgentStatus.Done:
         return 'Done';
+      default:
+        return status;
     }
   }
 
@@ -149,11 +153,15 @@ export class TeamTreeView
           'circle-slash',
           new vscode.ThemeColor('errorForeground')
         );
+      case AgentStatus.Paused:
+        return new vscode.ThemeIcon('debug-pause');
       case AgentStatus.Done:
         return new vscode.ThemeIcon(
           'pass-filled',
           new vscode.ThemeColor('charts.green')
         );
+      default:
+        return new vscode.ThemeIcon('circle-outline');
     }
   }
 

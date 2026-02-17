@@ -16,12 +16,18 @@ import {
 } from '../types';
 
 function createMockLLM(): LLMService {
+  const sendMessages = vi
+    .fn()
+    .mockResolvedValue('<action type="complete">Done</action>');
   return {
     modelName: 'test-model',
-    sendMessages: vi
-      .fn()
-      .mockResolvedValue('<action type="complete">Done</action>'),
+    sendMessages,
     streamMessages: vi.fn(),
+    streamWithProgress: vi.fn().mockImplementation(async (messages: unknown[], onChunk?: (chunk: string, accumulated: string) => void) => {
+      const result = await sendMessages(messages);
+      onChunk?.(result, result);
+      return result;
+    }),
   };
 }
 
@@ -298,6 +304,7 @@ describe('TeamLeadAgent - Pause/Resume', () => {
   let fileManager: FileManager;
   let taskBoard: TaskBoard;
   let mockLLM: LLMService;
+  let registry: AgentRegistry;
   let teamLead: TeamLeadAgent;
 
   beforeEach(() => {
@@ -305,12 +312,14 @@ describe('TeamLeadAgent - Pause/Resume', () => {
     fileManager = new FileManager(false, false);
     taskBoard = new TaskBoard();
     mockLLM = createMockLLM();
+    registry = new AgentRegistry(messageBus, fileManager, taskBoard, mockLLM);
     teamLead = new TeamLeadAgent(
       ROLE_DEFINITIONS['team-lead'],
       messageBus,
       fileManager,
       taskBoard,
-      mockLLM
+      mockLLM,
+      registry
     );
   });
 
@@ -366,12 +375,13 @@ describe('AgentRegistry - pauseAll/resumeAll', () => {
     taskBoard = new TaskBoard();
     mockLLM = createMockLLM();
     registry = new AgentRegistry(messageBus, fileManager, taskBoard, mockLLM);
-    registry.buildTeam(['team-lead', 'frontend', 'backend']);
-    registry.startAll();
+    registry.buildTeam();
+    registry.createAgent(ROLE_DEFINITIONS['frontend']);
+    registry.createAgent(ROLE_DEFINITIONS['backend']);
   });
 
   afterEach(() => {
-    registry.disposeAll();
+    registry.dispose();
     messageBus.dispose();
     taskBoard.dispose();
     fileManager.dispose();
@@ -412,8 +422,9 @@ describe('Scheduler - Pause/Resume', () => {
     taskBoard = new TaskBoard();
     mockLLM = createMockLLM();
     registry = new AgentRegistry(messageBus, fileManager, taskBoard, mockLLM);
-    registry.buildTeam(['team-lead', 'frontend', 'backend']);
-    registry.startAll();
+    registry.buildTeam();
+    registry.createAgent(ROLE_DEFINITIONS['frontend']);
+    registry.createAgent(ROLE_DEFINITIONS['backend']);
     scheduler = new Scheduler(registry, taskBoard, 2);
   });
 

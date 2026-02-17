@@ -9,9 +9,11 @@ import { TaskTreeView } from './ui/taskTreeView';
 import { ActivityTreeView } from './ui/activityTreeView';
 import { DevCrewStatusBar } from './ui/statusBar';
 import { DashboardPanel } from './ui/dashboardPanel';
+import { SummaryPanel } from './ui/summaryPanel';
 import { getConfig, validateConfig } from './config/settings';
 import { VSCodeLLMService } from './config/llmProviders';
-import { AgentRole } from './types';
+import { Agent } from './agents/agent';
+import { TeamLeadAgent } from './agents/teamLeadAgent';
 
 let devCrew: DevCrewInstance | null = null;
 
@@ -75,15 +77,15 @@ export function activate(context: vscode.ExtensionContext): void {
           llm
         );
 
-        // Build the team
-        const roles: AgentRole[] = ['team-lead', ...config.team.composition];
-        agentRegistry.buildTeam(roles);
+        // Build the team (creates only the Team Lead; specialists are added dynamically)
+        agentRegistry.buildTeam();
 
         // Create scheduler
         const scheduler = new Scheduler(
           agentRegistry,
           taskBoard,
-          config.team.maxParallelAgents
+          config.team.maxParallelAgents,
+          config.agent.maxIterationsPerTask
         );
 
         // Create UI components
@@ -108,10 +110,22 @@ export function activate(context: vscode.ExtensionContext): void {
           )
         );
 
-        // Refresh team tree when agent states change
-        for (const agent of agentRegistry.getAllAgents()) {
+        // Refresh UI when agents are added/removed or change state
+        const wireAgentUI = (agent: Agent) => {
           agent.onStateChange(() => teamTreeView.refresh());
+        };
+        // Wire existing agents (just TeamLead at this point)
+        for (const agent of agentRegistry.getAllAgents()) {
+          wireAgentUI(agent);
         }
+        // Wire future dynamically-created agents
+        agentRegistry.onAgentAdded((agent) => {
+          wireAgentUI(agent);
+          teamTreeView.refresh();
+        });
+        agentRegistry.onAgentRemoved(() => {
+          teamTreeView.refresh();
+        });
 
         // Start everything
         agentRegistry.startAll();
@@ -130,9 +144,8 @@ export function activate(context: vscode.ExtensionContext): void {
           statusBar,
         };
 
-        const teamSize = agentRegistry.getAllAgents().length;
         vscode.window.showInformationMessage(
-          `DevCrew started with ${teamSize} agents using ${llm.modelName}. Use "DevCrew: Assign Task" to get started.`
+          `DevCrew Team Lead started using ${llm.modelName}. Use "DevCrew: Assign Task" to get started.`
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -150,7 +163,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       devCrew.scheduler.dispose();
-      devCrew.agentRegistry.disposeAll();
+      devCrew.agentRegistry.dispose();
       devCrew.messageBus.dispose();
       devCrew.fileManager.dispose();
       devCrew.taskBoard.dispose();
@@ -240,7 +253,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: 'DevCrew: Team Lead is analyzing your request...',
+          title: 'DevCrew',
           cancellable: true,
         },
         async (progress, token) => {
@@ -248,14 +261,31 @@ export function activate(context: vscode.ExtensionContext): void {
             teamLead.stop();
           });
 
+          // Wire up streaming progress from Team Lead to the notification
+          const teamLeadAgent = teamLead as TeamLeadAgent;
+          teamLeadAgent.onProgress = (message: string) => {
+            progress.report({ message });
+          };
+
+          // Wire up completion callback to open the summary panel
+          teamLeadAgent.onComplete = () => {
+            SummaryPanel.createOrShow(
+              devCrew!.taskBoard,
+              devCrew!.agentRegistry
+            );
+          };
+
           try {
-            await teamLead.handleUserRequest(request);
+            progress.report({ message: 'Team Lead is analyzing your request...' });
+            await teamLeadAgent.handleUserRequest(request);
             progress.report({ message: 'Tasks created! Team is working...' });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             vscode.window.showErrorMessage(
               `Team Lead error: ${msg}`
             );
+          } finally {
+            teamLeadAgent.onProgress = null;
           }
         }
       );
@@ -327,7 +357,7 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   if (devCrew) {
     devCrew.scheduler.dispose();
-    devCrew.agentRegistry.disposeAll();
+    devCrew.agentRegistry.dispose();
     devCrew.messageBus.dispose();
     devCrew.fileManager.dispose();
     devCrew.taskBoard.dispose();

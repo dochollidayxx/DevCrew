@@ -123,13 +123,14 @@ export abstract class Agent {
 
   // ─── Task Execution ───────────────────────────────────────────────────
 
-  async executeTask(task: Task): Promise<string> {
+  async executeTask(task: Task, maxIterations: number = 50): Promise<string> {
     this.state.currentTaskId = task.id;
     this.setStatus(AgentStatus.Working);
     this.log(`Starting task: ${task.title}`);
 
     this.abortController = new AbortController();
     const filesWritten: string[] = [];
+    let hitIterationLimit = false;
 
     try {
       // Add task context to conversation
@@ -140,13 +141,86 @@ export abstract class Agent {
 
       // Iterative execution loop
       let iteration = 0;
-      const maxIterations = 20;
 
       while (iteration < maxIterations && !this.abortController.signal.aborted) {
         iteration++;
         this.log(`Iteration ${iteration}/${maxIterations}`);
 
-        const response = await this.llm.sendMessages(this.conversationHistory);
+        // Fire iteration progress
+        this.sendMessage(MessageType.IterationProgress, null, {
+          taskId: task.id,
+          taskTitle: task.title,
+          iteration,
+          maxIterations,
+          agentRole: this.roleConfig.role,
+          agentName: this.roleConfig.name,
+        });
+
+        let response: string;
+        let lastLoggedCharCount = 0;
+
+        try {
+          // Inactivity timeout: only fires if no streaming data arrives
+          // for 30 seconds. Resets on every chunk so productive streams
+          // (even very long ones) are never interrupted.
+          const INACTIVITY_MS = 30_000;
+          let inactivityTimerId: ReturnType<typeof setTimeout>;
+          let rejectInactivity: ((err: Error) => void) | null = null;
+
+          const inactivityPromise = new Promise<never>((_, reject) => {
+            rejectInactivity = reject;
+            inactivityTimerId = setTimeout(
+              () => reject(new Error('Iteration timeout')),
+              INACTIVITY_MS
+            );
+          });
+
+          const resetInactivityTimer = () => {
+            clearTimeout(inactivityTimerId);
+            inactivityTimerId = setTimeout(
+              () => rejectInactivity?.(new Error('Iteration timeout')),
+              INACTIVITY_MS
+            );
+          };
+
+          try {
+            response = await Promise.race([
+              this.llm.streamWithProgress(
+                this.conversationHistory,
+                (chunk, accumulated) => {
+                  resetInactivityTimer();
+
+                  // Log streaming progress every ~2000 chars for visibility
+                  if (accumulated.length - lastLoggedCharCount >= 2000) {
+                    lastLoggedCharCount = accumulated.length;
+                    this.log(`Iteration ${iteration}/${maxIterations}: received ${accumulated.length} chars...`);
+                  }
+
+                  // Fire streaming chunk for live UI updates
+                  this.sendMessage(MessageType.StreamingChunk, null, {
+                    taskId: task.id,
+                    agentRole: this.roleConfig.role,
+                    chunk,
+                    accumulated: accumulated.slice(-200), // last 200 chars for display
+                  });
+                }
+              ),
+              inactivityPromise,
+            ]);
+          } finally {
+            clearTimeout(inactivityTimerId!);
+          }
+        } catch (err) {
+          if (err instanceof Error && err.message === 'Iteration timeout') {
+            this.log(`Iteration ${iteration}/${maxIterations} timed out (no data for 30s)`);
+            this.conversationHistory.push({
+              role: 'user',
+              content: 'Your previous response stalled (no output for 30 seconds). Please be more concise and break your work into smaller steps. Continue from where you left off.',
+            });
+            continue;
+          }
+          throw err;
+        }
 
         this.conversationHistory.push({
           role: 'assistant',
@@ -158,19 +232,78 @@ export abstract class Agent {
 
         if (actions.length === 0) {
           // No more actions - agent considers task done
+          this.log(`Iteration ${iteration}/${maxIterations}: no actions, finishing`);
           break;
         }
+
+        // Log a summary of what this iteration is doing
+        const actionSummary = actions.map(a => {
+          switch (a.type) {
+            case 'write_file': return `write ${a.filePath}`;
+            case 'edit_file': return `edit ${a.filePath}`;
+            case 'read_file': return `read ${a.filePath}`;
+            case 'list_files': return `list ${a.dirPath}/${a.pattern}`;
+            case 'run_command': return `run "${a.command}"`;
+            case 'complete': return 'complete';
+            case 'status': return 'status';
+            case 'ask': return 'ask';
+            case 'blocker': return 'blocker';
+            default: return a.type;
+          }
+        }).join(', ');
+        this.log(`Iteration ${iteration}/${maxIterations}: ${actionSummary}`);
 
         // Execute actions
         for (const action of actions) {
           if (this.abortController.signal.aborted) break;
 
           // Track files written during this task
-          if (action.type === 'write_file') {
+          if (action.type === 'write_file' || action.type === 'edit_file') {
             filesWritten.push(action.filePath);
           }
 
           const result = await this.executeAction(action, task);
+
+          // Fire progress messages for user-visible actions
+          if (action.type === 'write_file' && !result.startsWith('Error')) {
+            this.sendMessage(MessageType.FileWritten, null, {
+              taskId: task.id,
+              filePath: action.filePath,
+              agentRole: this.roleConfig.role,
+              agentName: this.roleConfig.name,
+            });
+          } else if (action.type === 'edit_file' && !result.startsWith('Error')) {
+            this.sendMessage(MessageType.FileEdited, null, {
+              taskId: task.id,
+              filePath: action.filePath,
+              agentRole: this.roleConfig.role,
+              agentName: this.roleConfig.name,
+            });
+          } else if (action.type === 'run_command') {
+            this.sendMessage(MessageType.CommandExecuted, null, {
+              taskId: task.id,
+              command: action.command,
+              success: !result.startsWith('Command failed') && !result.startsWith('Error'),
+              agentRole: this.roleConfig.role,
+              agentName: this.roleConfig.name,
+            });
+          } else if (action.type === 'read_file') {
+            this.sendMessage(MessageType.FileRead, null, {
+              taskId: task.id,
+              filePath: action.filePath,
+              agentRole: this.roleConfig.role,
+              agentName: this.roleConfig.name,
+            });
+          } else if (action.type === 'list_files') {
+            this.sendMessage(MessageType.FilesListed, null, {
+              taskId: task.id,
+              dirPath: action.dirPath,
+              pattern: action.pattern,
+              agentRole: this.roleConfig.role,
+              agentName: this.roleConfig.name,
+            });
+          }
+
           this.conversationHistory.push({
             role: 'user',
             content: `Action result:\n${result}`,
@@ -183,17 +316,32 @@ export abstract class Agent {
         }
       }
 
+      // Detect if we exited because of the iteration limit
+      if (iteration >= maxIterations) {
+        hitIterationLimit = true;
+        this.log(`Hit iteration limit (${maxIterations}) without explicit completion`);
+      }
+
       // Extract completion summary
       const completeAction = this.parseActions(
         this.conversationHistory[this.conversationHistory.length - 1]?.content ?? ''
       ).find(a => a.type === 'complete') as CompleteAction | undefined;
-      const completionSummary = completeAction?.summary
-        ?? this.conversationHistory[this.conversationHistory.length - 1]?.content?.slice(0, 2000)
-        ?? 'Task completed';
+
+      let completionSummary: string;
+      if (completeAction) {
+        completionSummary = completeAction.summary;
+      } else if (hitIterationLimit) {
+        completionSummary = `[INCOMPLETE - hit ${maxIterations} iteration limit] `
+          + (this.conversationHistory[this.conversationHistory.length - 1]?.content?.slice(0, 2000) ?? 'No summary');
+      } else {
+        completionSummary = this.conversationHistory[this.conversationHistory.length - 1]?.content?.slice(0, 2000)
+          ?? 'Task completed';
+      }
 
       // Report completion with file provenance
       this.sendMessage(MessageType.TaskCompleted, null, {
         taskId: task.id,
+        taskTitle: task.title,
         summary: completionSummary,
         filesWritten,
       });
@@ -207,6 +355,7 @@ export abstract class Agent {
       this.log(`Task failed: ${errorMsg}`);
       this.sendMessage(MessageType.TaskFailed, null, {
         taskId: task.id,
+        taskTitle: task.title,
         error: errorMsg,
       });
       this.setStatus(AgentStatus.Error);
@@ -237,6 +386,20 @@ export abstract class Agent {
               type: 'write_file',
               filePath: pathMatch[1],
               content: contentMatch[1],
+            });
+          }
+          break;
+        }
+        case 'edit_file': {
+          const pathMatch = body.match(/path="([^"]+)"/);
+          const searchMatch = body.match(/<search>([^]*?)<\/search>/);
+          const contentMatch = body.match(/<content>([^]*?)<\/content>/);
+          if (pathMatch && searchMatch) {
+            actions.push({
+              type: 'edit_file',
+              filePath: pathMatch[1],
+              search: searchMatch[1],
+              content: contentMatch?.[1] ?? '',
             });
           }
           break;
@@ -293,6 +456,30 @@ export abstract class Agent {
           }
           break;
         }
+        case 'create_agent': {
+          const roleTag = body.match(/<role>([^]*?)<\/role>/);
+          const nameTag = body.match(/<name>([^]*?)<\/name>/);
+          const descTag = body.match(/<description>([^]*?)<\/description>/);
+          const promptTag = body.match(/<prompt>([^]*?)<\/prompt>/);
+          const capsTag = body.match(/<capabilities>([^]*?)<\/capabilities>/);
+          if (roleTag) {
+            actions.push({
+              type: 'create_agent',
+              role: roleTag[1].trim(),
+              name: nameTag?.[1].trim() ?? roleTag[1].trim(),
+              description: descTag?.[1].trim() ?? '',
+              prompt: promptTag?.[1].trim() ?? '',
+              capabilities: capsTag
+                ? capsTag[1].split(',').map((c) => c.trim()).filter(Boolean)
+                : [],
+            });
+          }
+          break;
+        }
+        case 'remove_agent': {
+          actions.push({ type: 'remove_agent', role: body.trim() });
+          break;
+        }
         default: {
           this.log(`Unknown action type: ${type}`);
         }
@@ -309,6 +496,9 @@ export abstract class Agent {
     switch (action.type) {
       case 'write_file': {
         return this.handleWriteFile(action, task);
+      }
+      case 'edit_file': {
+        return this.handleEditFile(action, task);
       }
       case 'read_file': {
         return this.handleReadFile(action);
@@ -341,6 +531,9 @@ export abstract class Agent {
       case 'complete': {
         return `Task marked as complete: ${action.summary}`;
       }
+      case 'create_agent':
+      case 'remove_agent':
+        return 'Agent management actions are only available to the Team Lead.';
       default:
         return 'Unknown action.';
     }
@@ -386,6 +579,78 @@ export abstract class Agent {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return `Error writing file: ${msg}`;
+    }
+  }
+
+  private async handleEditFile(
+    action: EditFileAction,
+    task: Task
+  ): Promise<string> {
+    try {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (!workspaceFolders) {
+        return 'Error: No workspace folder open.';
+      }
+
+      const fileUri = vscode.Uri.joinPath(
+        workspaceFolders[0].uri,
+        action.filePath
+      );
+
+      // Read current file content
+      let content: string;
+      try {
+        content = await this.fileManager.readFile(fileUri);
+      } catch {
+        return `Error: File not found: ${action.filePath}. Use write_file to create new files.`;
+      }
+
+      // Find the search text
+      const firstIndex = content.indexOf(action.search);
+      if (firstIndex === -1) {
+        return `Error: Search text not found in ${action.filePath}. Use read_file first to see the exact file contents, then copy the text verbatim.`;
+      }
+
+      // Check for multiple matches
+      const secondIndex = content.indexOf(action.search, firstIndex + 1);
+      if (secondIndex !== -1) {
+        return `Error: Search text matches multiple locations in ${action.filePath}. Include more surrounding context to make the match unique.`;
+      }
+
+      // Compute range from character offset
+      const startOffset = firstIndex;
+      const endOffset = firstIndex + action.search.length;
+
+      const before = content.substring(0, startOffset);
+      const startLines = before.split('\n');
+      const startLine = startLines.length - 1;
+      const startChar = startLines[startLines.length - 1].length;
+
+      const beforeEnd = content.substring(0, endOffset);
+      const endLines = beforeEnd.split('\n');
+      const endLine = endLines.length - 1;
+      const endChar = endLines[endLines.length - 1].length;
+
+      const range = new vscode.Range(
+        new vscode.Position(startLine, startChar),
+        new vscode.Position(endLine, endChar)
+      );
+
+      const edit: FileEdit = {
+        uri: fileUri,
+        type: 'replace',
+        range,
+        content: action.content,
+        agentId: this.id,
+        taskId: task.id,
+        description: `${this.roleConfig.name}: editing ${action.filePath}`,
+      };
+
+      await this.fileManager.applyEdit(edit);
+      return `File edited: ${action.filePath}`;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return `Error editing file: ${msg}`;
     }
   }
 
@@ -542,8 +807,17 @@ export abstract class Agent {
       '',
       this.roleConfig.systemPrompt,
       '',
+      `## Working Style`,
+      `Work ITERATIVELY — one action per response, or a small related group.`,
+      `Do NOT write all files in a single response. Instead:`,
+      `1. First iteration: use list_files / read_file to understand the project`,
+      `2. Each subsequent iteration: write ONE file, then stop and let the system process it`,
+      `3. After all files are written: use the complete action`,
+      `This keeps responses short and lets the system track your progress.`,
+      '',
       `To perform actions, use XML action tags:`,
       `<action type="write_file">path="relative/path"<content>file content here</content></action>`,
+      `<action type="edit_file">path="relative/path"<search>exact text to find</search><content>replacement text</content></action>`,
       `<action type="read_file">path="relative/path"</action>`,
       `<action type="list_files">path="relative/dir" pattern="**/*.ts"</action>`,
       `<action type="run_command">command="npm test" cwd="optional/subdir" timeout="60000"</action>`,
@@ -551,6 +825,13 @@ export abstract class Agent {
       `<action type="status">Your status message</action>`,
       `<action type="blocker">Description of what's blocking you</action>`,
       `<action type="complete">Summary of what you accomplished</action>`,
+      '',
+      `## File Editing Guidance`,
+      `- write_file: create new files, or rewrite small files entirely`,
+      `- edit_file: modify specific parts of existing files (preferred for targeted changes)`,
+      `- Always read_file first before using edit_file so you know the exact text to search for`,
+      `- The <search> text must match exactly one location in the file`,
+      `- Empty <content> deletes the matched text`,
     ].join('\n');
   }
 
@@ -624,6 +905,13 @@ interface WriteFileAction {
   content: string;
 }
 
+interface EditFileAction {
+  type: 'edit_file';
+  filePath: string;
+  search: string;
+  content: string;
+}
+
 interface ReadFileAction {
   type: 'read_file';
   filePath: string;
@@ -663,12 +951,29 @@ interface RunCommandAction {
   timeout?: number;
 }
 
-type AgentAction =
+interface CreateAgentAction {
+  type: 'create_agent';
+  role: string;
+  name: string;
+  description: string;
+  prompt: string;
+  capabilities: string[];
+}
+
+interface RemoveAgentAction {
+  type: 'remove_agent';
+  role: string;
+}
+
+export type AgentAction =
   | WriteFileAction
+  | EditFileAction
   | ReadFileAction
   | AskAction
   | BlockerAction
   | StatusAction
   | CompleteAction
   | ListFilesAction
-  | RunCommandAction;
+  | RunCommandAction
+  | CreateAgentAction
+  | RemoveAgentAction;

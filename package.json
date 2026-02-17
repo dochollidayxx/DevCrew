@@ -157,6 +157,13 @@
             "none"
           ],
           "description": "Notification verbosity level"
+        },
+        "devcrew.agent.maxIterationsPerTask": {
+          "type": "number",
+          "default": 50,
+          "minimum": 5,
+          "maximum": 200,
+          "description": "Maximum LLM round-trips an agent can take per task before stopping"
         }
       }
     }

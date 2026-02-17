@@ -2,16 +2,13 @@ import * as vscode from 'vscode';
 
 // ─── Agent Roles ──────────────────────────────────────────────────────────────
 
-export type AgentRole =
-  | 'team-lead'
-  | 'architect'
-  | 'frontend'
-  | 'backend'
-  | 'tester'
-  | 'reviewer'
-  | 'devops'
-  | 'security'
-  | 'docs';
+/**
+ * Agent roles are free-form strings. The Team Lead creates agents
+ * dynamically with whatever roles the task requires.
+ * Well-known roles (e.g. 'team-lead', 'architect') have templates
+ * in roleDefinitions.ts but any string is valid.
+ */
+export type AgentRole = string;
 
 export interface AgentRoleConfig {
   role: AgentRole;
@@ -123,6 +120,19 @@ export enum MessageType {
   UserFeedbackRequest = 'user_feedback_request',
   UserFeedbackResponse = 'user_feedback_response',
 
+  // Dynamic agent lifecycle
+  AgentCreated = 'agent_created',
+  AgentRemoved = 'agent_removed',
+
+  // Progress
+  IterationProgress = 'iteration_progress',
+  FileWritten = 'file_written',
+  FileEdited = 'file_edited',
+  FileRead = 'file_read',
+  FilesListed = 'files_listed',
+  CommandExecuted = 'command_executed',
+  StreamingChunk = 'streaming_chunk',
+
   // System
   Error = 'error',
   Log = 'log',
@@ -181,6 +191,16 @@ export interface LLMService {
     token?: vscode.CancellationToken
   ): Promise<AsyncIterable<string>>;
 
+  /**
+   * Stream a response and call onChunk with each partial chunk as it arrives.
+   * Returns the full concatenated response when done.
+   */
+  streamWithProgress(
+    messages: LLMMessage[],
+    onChunk: (chunk: string, accumulated: string) => void,
+    token?: vscode.CancellationToken
+  ): Promise<string>;
+
   /** The display name of the selected model. */
   readonly modelName: string;
 }
@@ -194,8 +214,10 @@ export interface LLMMessage {
 
 export interface DevCrewConfig {
   team: {
-    composition: AgentRole[];
     maxParallelAgents: number;
+  };
+  agent: {
+    maxIterationsPerTask: number;
   };
   fileOps: {
     requireApproval: boolean;

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SpecialistAgent } from '../agents/specialistAgent';
 import { TeamLeadAgent } from '../agents/teamLeadAgent';
+import { AgentRegistry } from '../agents/registry';
 import { ROLE_DEFINITIONS } from '../agents/roles/roleDefinitions';
 import { MessageBus } from '../communication/messageBus';
 import { FileManager } from '../fileops/fileManager';
@@ -22,10 +23,16 @@ vi.mock('child_process', () => ({
 }));
 
 function createMockLLM(responseContent = '<action type="complete">All done</action>'): LLMService {
+  const sendMessages = vi.fn().mockResolvedValue(responseContent);
   return {
     modelName: 'test-model',
-    sendMessages: vi.fn().mockResolvedValue(responseContent),
+    sendMessages,
     streamMessages: vi.fn(),
+    streamWithProgress: vi.fn().mockImplementation(async (messages: unknown[], onChunk?: (chunk: string, accumulated: string) => void) => {
+      const result = await sendMessages(messages);
+      onChunk?.(result, result);
+      return result;
+    }),
   };
 }
 
@@ -200,6 +207,77 @@ export function subtract(a: number, b: number): number {
       expect(actions[0].content).toContain('export function subtract');
     });
 
+    // ─── edit_file Parsing ────────────────────────────────────────────
+
+    it('parses edit_file with path, search, and content', () => {
+      const content = `
+<action type="edit_file">path="src/app.ts"
+<search>const oldValue = "foo";
+const otherOld = "bar";</search>
+<content>const newValue = "baz";
+const otherNew = "qux";</content>
+</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('edit_file');
+      expect(actions[0].filePath).toBe('src/app.ts');
+      expect(actions[0].search).toContain('const oldValue = "foo"');
+      expect(actions[0].content).toContain('const newValue = "baz"');
+    });
+
+    it('rejects edit_file missing search tag', () => {
+      const content = `
+<action type="edit_file">path="src/app.ts"
+<content>replacement</content>
+</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(0);
+    });
+
+    it('rejects edit_file missing path', () => {
+      const content = `
+<action type="edit_file">
+<search>some text</search>
+<content>replacement</content>
+</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(0);
+    });
+
+    it('handles multiline search/content blocks in edit_file', () => {
+      const content = `
+<action type="edit_file">path="src/utils.ts"
+<search>function add(a: number, b: number): number {
+  return a + b;
+}</search>
+<content>function add(a: number, b: number): number {
+  // Validated addition
+  return a + b;
+}</content>
+</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].search).toContain('function add');
+      expect(actions[0].content).toContain('// Validated addition');
+    });
+
+    it('parses edit_file with empty content (deletion)', () => {
+      const content = `
+<action type="edit_file">path="src/app.ts"
+<search>const unused = "remove me";</search>
+<content></content>
+</action>
+      `;
+      const actions = parseActions(content);
+      expect(actions).toHaveLength(1);
+      expect(actions[0].type).toBe('edit_file');
+      expect(actions[0].content).toBe('');
+    });
+
     // ─── list_files Parsing ───────────────────────────────────────────
 
     it('parses list_files action with path and pattern', () => {
@@ -363,6 +441,122 @@ export function subtract(a: number, b: number): number {
     });
   });
 
+  // ─── edit_file Execution ────────────────────────────────────────────
+
+  describe('edit_file execution', () => {
+    function executeAction(action: any, task: Task) {
+      return (agent as any).executeAction(action, task);
+    }
+
+    it('successfully edits a file with unique match', async () => {
+      const fileContent = 'line one\nconst x = 1;\nline three\n';
+      vi.spyOn(fileManager, 'readFile').mockResolvedValue(fileContent);
+      vi.spyOn(fileManager, 'applyEdit').mockResolvedValue(true);
+
+      const result = await executeAction(
+        {
+          type: 'edit_file',
+          filePath: 'src/app.ts',
+          search: 'const x = 1;',
+          content: 'const x = 2;',
+        },
+        makeTask()
+      );
+
+      expect(result).toBe('File edited: src/app.ts');
+      expect(fileManager.applyEdit).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'replace',
+          content: 'const x = 2;',
+          range: expect.objectContaining({
+            start: expect.objectContaining({ line: 1, character: 0 }),
+            end: expect.objectContaining({ line: 1, character: 12 }),
+          }),
+        })
+      );
+    });
+
+    it('returns error when search text is not found', async () => {
+      vi.spyOn(fileManager, 'readFile').mockResolvedValue('some other content');
+      vi.spyOn(fileManager, 'applyEdit').mockResolvedValue(true);
+
+      const result = await executeAction(
+        {
+          type: 'edit_file',
+          filePath: 'src/app.ts',
+          search: 'nonexistent text',
+          content: 'replacement',
+        },
+        makeTask()
+      );
+
+      expect(result).toContain('Error');
+      expect(result).toContain('not found');
+      expect(fileManager.applyEdit).not.toHaveBeenCalled();
+    });
+
+    it('returns error when multiple matches exist', async () => {
+      const fileContent = 'const x = 1;\nconst y = 2;\nconst x = 1;\n';
+      vi.spyOn(fileManager, 'readFile').mockResolvedValue(fileContent);
+      vi.spyOn(fileManager, 'applyEdit').mockResolvedValue(true);
+
+      const result = await executeAction(
+        {
+          type: 'edit_file',
+          filePath: 'src/app.ts',
+          search: 'const x = 1;',
+          content: 'const x = 3;',
+        },
+        makeTask()
+      );
+
+      expect(result).toContain('Error');
+      expect(result).toContain('multiple locations');
+      expect(fileManager.applyEdit).not.toHaveBeenCalled();
+    });
+
+    it('returns error when file does not exist', async () => {
+      vi.spyOn(fileManager, 'readFile').mockRejectedValue(new Error('Cannot read file'));
+
+      const result = await executeAction(
+        {
+          type: 'edit_file',
+          filePath: 'src/missing.ts',
+          search: 'anything',
+          content: 'replacement',
+        },
+        makeTask()
+      );
+
+      expect(result).toContain('Error');
+      expect(result).toContain('File not found');
+    });
+
+    it('publishes FileEdited message on success', async () => {
+      const fileContent = 'const x = 1;';
+      vi.spyOn(fileManager, 'readFile').mockResolvedValue(fileContent);
+      vi.spyOn(fileManager, 'applyEdit').mockResolvedValue(true);
+
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce(
+          '<action type="edit_file">path="src/app.ts"<search>const x = 1;</search><content>const x = 2;</content></action>'
+        )
+        .mockResolvedValueOnce(
+          '<action type="complete">Done</action>'
+        );
+
+      const handler = vi.fn();
+      messageBus.subscribeToType(MessageType.FileEdited, handler);
+
+      agent.start();
+      await agent.executeTask(makeTask());
+
+      expect(handler).toHaveBeenCalled();
+      const msg = handler.mock.calls[0][0] as Message;
+      expect((msg.payload as any).filePath).toBe('src/app.ts');
+    });
+  });
+
   // ─── Task Execution ────────────────────────────────────────────────
 
   describe('executeTask', () => {
@@ -387,10 +581,11 @@ export function subtract(a: number, b: number): number {
       expect(handler).toHaveBeenCalled();
       const msg = handler.mock.calls[0][0] as Message;
       expect((msg.payload as any).taskId).toBe('task-test-1');
+      expect((msg.payload as any).taskTitle).toBe('Test Task');
     });
 
     it('publishes TaskFailed message on LLM error', async () => {
-      (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockRejectedValue(
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockRejectedValue(
         new Error('API rate limit')
       );
 
@@ -401,27 +596,63 @@ export function subtract(a: number, b: number): number {
       await expect(agent.executeTask(makeTask())).rejects.toThrow('API rate limit');
 
       expect(handler).toHaveBeenCalled();
+      const msg = handler.mock.calls[0][0] as Message;
+      expect((msg.payload as any).taskId).toBe('task-test-1');
+      expect((msg.payload as any).taskTitle).toBe('Test Task');
       const state = agent.getState();
       expect(state.status).toBe(AgentStatus.Error);
     });
 
     it('limits iterations to maxIterations', async () => {
       // Return actions that never complete
-      (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockResolvedValue(
         '<action type="status">Still working...</action>'
       );
 
       agent.start();
-      await agent.executeTask(makeTask());
+      const customLimit = 10;
+      const summary = await agent.executeTask(makeTask(), customLimit);
 
-      // Should have called LLM up to 20 times (maxIterations)
-      expect(mockLLM.sendMessages).toHaveBeenCalled();
-      const callCount = (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mock.calls.length;
-      expect(callCount).toBeLessThanOrEqual(21); // 20 iterations + possible extra
+      // Should have called LLM exactly customLimit times
+      const callCount = (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mock.calls.length;
+      expect(callCount).toBe(customLimit);
+
+      // Summary should indicate incomplete
+      expect(summary).toContain('INCOMPLETE');
+      expect(summary).toContain(`${customLimit} iteration limit`);
+    });
+
+    it('recovers from inactivity timeout and continues', async () => {
+      vi.useFakeTimers();
+
+      let callCount = 0;
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockImplementation(
+        () => {
+          callCount++;
+          if (callCount === 1) {
+            // First call: never resolves (simulates hang with no data flowing)
+            return new Promise<string>(() => {});
+          }
+          // Second call: completes normally
+          return Promise.resolve('<action type="complete">Done after timeout recovery</action>');
+        }
+      );
+
+      agent.start();
+      const taskPromise = agent.executeTask(makeTask());
+
+      // Advance past the 30-second inactivity timeout
+      await vi.advanceTimersByTimeAsync(31_000);
+
+      const summary = await taskPromise;
+      expect(summary).toContain('Done after timeout recovery');
+      expect(callCount).toBe(2);
+
+      vi.useRealTimers();
     });
 
     it('returns a completion summary string', async () => {
-      (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockResolvedValue(
         '<action type="complete">Built the auth module with JWT</action>'
       );
 
@@ -511,7 +742,7 @@ export function subtract(a: number, b: number): number {
 
   describe('messaging', () => {
     it('sends StatusUpdate messages for status actions', async () => {
-      (mockLLM.sendMessages as ReturnType<typeof vi.fn>)
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce(
           '<action type="status">Working on it</action>'
         )
@@ -529,7 +760,7 @@ export function subtract(a: number, b: number): number {
     });
 
     it('sends BlockerRaised messages for blocker actions', async () => {
-      (mockLLM.sendMessages as ReturnType<typeof vi.fn>)
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
         .mockResolvedValueOnce(
           '<action type="blocker">Need database access</action>'
         )
@@ -555,6 +786,7 @@ describe('TeamLeadAgent - Task Decomposition Parsing', () => {
   let fileManager: FileManager;
   let taskBoard: TaskBoard;
   let mockLLM: LLMService;
+  let registry: AgentRegistry;
   let teamLead: TeamLeadAgent;
 
   beforeEach(() => {
@@ -562,24 +794,31 @@ describe('TeamLeadAgent - Task Decomposition Parsing', () => {
     fileManager = new FileManager(false, false);
     taskBoard = new TaskBoard();
     mockLLM = createMockLLM();
+    registry = new AgentRegistry(messageBus, fileManager, taskBoard, mockLLM);
     teamLead = new TeamLeadAgent(
       ROLE_DEFINITIONS['team-lead'],
       messageBus,
       fileManager,
       taskBoard,
-      mockLLM
+      mockLLM,
+      registry
     );
   });
 
   afterEach(() => {
     teamLead.dispose();
+    registry.dispose();
     messageBus.dispose();
     fileManager.dispose();
     taskBoard.dispose();
   });
 
   it('decomposes a user request into tasks on the board', async () => {
-    const llmResponse = `
+    // handleUserRequest now makes two streaming LLM calls:
+    // 1. Staffing (agent blocks) — return empty for this test
+    // 2. Task decomposition (task blocks)
+    const staffingResponse = `No agents needed for this test.`;
+    const decompositionResponse = `
 Here's my plan:
 
 <task>
@@ -606,7 +845,9 @@ Here's my plan:
 </task>
     `;
 
-    (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(llmResponse);
+    (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(staffingResponse)
+      .mockResolvedValueOnce(decompositionResponse);
 
     teamLead.start();
     await teamLead.handleUserRequest('Build a REST API for user management');
@@ -632,9 +873,11 @@ Here's my plan:
   });
 
   it('handles user questions from the LLM response', async () => {
-    const llmResponse = `
+    // Staffing returns a question; decomposition returns tasks
+    const staffingResponse = `
 <question>What database should we use - PostgreSQL or MongoDB?</question>
-
+    `;
+    const decompositionResponse = `
 <task>
   <title>Set up database</title>
   <description>Configure the database</description>
@@ -648,7 +891,9 @@ Here's my plan:
     const originalShowInputBox = window.showInputBox;
     (window as any).showInputBox = vi.fn().mockResolvedValue('PostgreSQL');
 
-    (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(llmResponse);
+    (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(staffingResponse)
+      .mockResolvedValueOnce(decompositionResponse);
 
     teamLead.start();
     await teamLead.handleUserRequest('Build a data layer');
@@ -660,9 +905,9 @@ Here's my plan:
   });
 
   it('handles empty task list gracefully', async () => {
-    (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(
-      'I need more information before I can create tasks.'
-    );
+    (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('No agents needed.')
+      .mockResolvedValueOnce('I need more information before I can create tasks.');
 
     teamLead.start();
     await teamLead.handleUserRequest('Do something');
@@ -691,14 +936,16 @@ Here's my plan:
     const handler = vi.fn();
     messageBus.subscribeToType(MessageType.TaskDecomposition, handler);
 
-    (mockLLM.sendMessages as ReturnType<typeof vi.fn>).mockResolvedValue(`
+    (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('No agents needed.')
+      .mockResolvedValueOnce(`
 <task>
   <title>Task A</title>
   <description>Do A</description>
   <role>backend</role>
   <priority>medium</priority>
 </task>
-    `);
+      `);
 
     teamLead.start();
     await teamLead.handleUserRequest('Build something');
