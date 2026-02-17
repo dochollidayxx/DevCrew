@@ -13,9 +13,9 @@ import { SummaryPanel } from './ui/summaryPanel';
 import { getConfig, validateConfig } from './config/settings';
 import { VSCodeLLMService } from './config/llmProviders';
 import { Agent } from './agents/agent';
-import { TeamLeadAgent } from './agents/teamLeadAgent';
 
 let devCrew: DevCrewInstance | null = null;
+let chatChannel: vscode.OutputChannel | null = null;
 
 /**
  * Holds all the runtime components of a DevCrew session.
@@ -33,6 +33,10 @@ interface DevCrewInstance {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Initialize context keys
+  vscode.commands.executeCommand('setContext', 'devcrew:teamRunning', false);
+  vscode.commands.executeCommand('setContext', 'devcrew:teamPaused', false);
+
   // ─── Start Team Command ─────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand('devcrew.startTeam', async () => {
@@ -144,6 +148,9 @@ export function activate(context: vscode.ExtensionContext): void {
           statusBar,
         };
 
+        vscode.commands.executeCommand('setContext', 'devcrew:teamRunning', true);
+        vscode.commands.executeCommand('setContext', 'devcrew:teamPaused', false);
+
         vscode.window.showInformationMessage(
           `DevCrew Team Lead started using ${llm.modelName}. Use "DevCrew: Assign Task" to get started.`
         );
@@ -173,6 +180,14 @@ export function activate(context: vscode.ExtensionContext): void {
       devCrew.activityTreeView.dispose();
       devCrew = null;
 
+      if (chatChannel) {
+        chatChannel.dispose();
+        chatChannel = null;
+      }
+
+      vscode.commands.executeCommand('setContext', 'devcrew:teamRunning', false);
+      vscode.commands.executeCommand('setContext', 'devcrew:teamPaused', false);
+
       vscode.window.showInformationMessage('DevCrew team stopped.');
     })
   );
@@ -192,6 +207,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
       devCrew.agentRegistry.pauseAll();
       devCrew.scheduler.pause();
+
+      vscode.commands.executeCommand('setContext', 'devcrew:teamPaused', true);
 
       const stats = devCrew.taskBoard.getStats();
       vscode.window.showInformationMessage(
@@ -217,6 +234,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
       devCrew.agentRegistry.resumeAll();
       devCrew.scheduler.resume();
+
+      vscode.commands.executeCommand('setContext', 'devcrew:teamPaused', false);
 
       const stats = devCrew.taskBoard.getStats();
       vscode.window.showInformationMessage(
@@ -262,13 +281,12 @@ export function activate(context: vscode.ExtensionContext): void {
           });
 
           // Wire up streaming progress from Team Lead to the notification
-          const teamLeadAgent = teamLead as TeamLeadAgent;
-          teamLeadAgent.onProgress = (message: string) => {
+          teamLead.onProgress = (message: string) => {
             progress.report({ message });
           };
 
           // Wire up completion callback to open the summary panel
-          teamLeadAgent.onComplete = () => {
+          teamLead.onComplete = () => {
             SummaryPanel.createOrShow(
               devCrew!.taskBoard,
               devCrew!.agentRegistry
@@ -277,7 +295,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
           try {
             progress.report({ message: 'Team Lead is analyzing your request...' });
-            await teamLeadAgent.handleUserRequest(request);
+            await teamLead.handleUserRequest(request);
             progress.report({ message: 'Tasks created! Team is working...' });
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -285,7 +303,7 @@ export function activate(context: vscode.ExtensionContext): void {
               `Team Lead error: ${msg}`
             );
           } finally {
-            teamLeadAgent.onProgress = null;
+            teamLead.onProgress = null;
           }
         }
       );
@@ -339,13 +357,16 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         const response = await teamLead.chatWithUser(message);
 
-        // Show response in an output channel
-        const channel = vscode.window.createOutputChannel(
-          'DevCrew: Team Lead Chat'
-        );
-        channel.appendLine(`You: ${message}`);
-        channel.appendLine(`Team Lead: ${response}`);
-        channel.show();
+        // Show response in an output channel (reuse across invocations)
+        if (!chatChannel) {
+          chatChannel = vscode.window.createOutputChannel(
+            'DevCrew: Team Lead Chat'
+          );
+        }
+        chatChannel.appendLine(`You: ${message}`);
+        chatChannel.appendLine(`Team Lead: ${response}`);
+        chatChannel.appendLine('');
+        chatChannel.show();
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         vscode.window.showErrorMessage(`Team Lead error: ${msg}`);
@@ -363,5 +384,9 @@ export function deactivate(): void {
     devCrew.taskBoard.dispose();
     devCrew.statusBar.dispose();
     devCrew = null;
+  }
+  if (chatChannel) {
+    chatChannel.dispose();
+    chatChannel = null;
   }
 }

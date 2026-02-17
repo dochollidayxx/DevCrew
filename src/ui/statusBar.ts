@@ -76,7 +76,8 @@ export class DevCrewStatusBar {
       const pct = effectiveTotal > 0
         ? Math.round((stats.completed / effectiveTotal) * 100)
         : 0;
-      this.progressItem.text = `${stats.completed}/${effectiveTotal} tasks (${pct}%)`;
+      this.progressItem.text = `$(tasklist) ${stats.completed}/${effectiveTotal} tasks (${pct}%)`;
+      this.progressItem.tooltip = `DevCrew Progress: ${stats.completed} of ${effectiveTotal} tasks completed (${pct}%)`;
 
       if ((stats.cancelled ?? 0) > 0) {
         this.progressItem.text += ` (${stats.cancelled} cancelled)`;

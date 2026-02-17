@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { Agent } from '../agents/agent';
 import { AgentRegistry } from '../agents/registry';
 import { AgentStatus } from '../types';
 
@@ -57,43 +56,43 @@ export class TeamTreeView
     const state = agent.getState();
     const items: TeamTreeItem[] = [];
 
-    items.push(
-      new TeamTreeItem(
-        `Role: ${agent.roleConfig.role}`,
-        vscode.TreeItemCollapsibleState.None,
-        agentId
-      )
+    const roleItem = new TeamTreeItem(
+      `Role: ${agent.roleConfig.role}`,
+      vscode.TreeItemCollapsibleState.None,
+      agentId
     );
+    roleItem.iconPath = new vscode.ThemeIcon('tag');
+    items.push(roleItem);
 
-    items.push(
-      new TeamTreeItem(
-        `Status: ${this.statusLabel(state.status)}`,
-        vscode.TreeItemCollapsibleState.None,
-        agentId
-      )
+    const statusItem = new TeamTreeItem(
+      `Status: ${this.statusLabel(state.status)}`,
+      vscode.TreeItemCollapsibleState.None,
+      agentId
     );
+    statusItem.iconPath = new vscode.ThemeIcon('pulse');
+    items.push(statusItem);
 
     if (state.currentTaskId) {
-      items.push(
-        new TeamTreeItem(
-          `Current Task: ${state.currentTaskId}`,
-          vscode.TreeItemCollapsibleState.None,
-          agentId
-        )
-      );
-    }
-
-    items.push(
-      new TeamTreeItem(
-        `Completed: ${state.completedTaskIds.length} tasks`,
+      const taskItem = new TeamTreeItem(
+        `Current Task: ${state.currentTaskId}`,
         vscode.TreeItemCollapsibleState.None,
         agentId
-      )
+      );
+      taskItem.iconPath = new vscode.ThemeIcon('tasklist');
+      items.push(taskItem);
+    }
+
+    const completedItem = new TeamTreeItem(
+      `Completed: ${state.completedTaskIds.length} tasks`,
+      vscode.TreeItemCollapsibleState.None,
+      agentId
     );
+    completedItem.iconPath = new vscode.ThemeIcon('check-all');
+    items.push(completedItem);
 
     if (state.blockerDescription) {
       const blocker = new TeamTreeItem(
-        `BLOCKER: ${state.blockerDescription}`,
+        state.blockerDescription,
         vscode.TreeItemCollapsibleState.None,
         agentId
       );

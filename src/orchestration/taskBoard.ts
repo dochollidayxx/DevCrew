@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Task, TaskStatus, TaskPriority } from '../types';
+import { Task, TaskStatus, TaskPriority, TASK_METADATA } from '../types';
 
 /**
  * Central task management system. Tracks all tasks, their status,
@@ -183,7 +183,7 @@ export class TaskBoard {
 
     // Store the completion summary for downstream dependencies
     if (task && completionSummary) {
-      task.metadata['completionSummary'] = completionSummary;
+      task.metadata[TASK_METADATA.completionSummary] = completionSummary;
     }
 
     // Check if completing this task unblocks others
@@ -228,7 +228,7 @@ export class TaskBoard {
       return undefined;
     }
 
-    task.metadata['statusBeforeCancel'] = task.status;
+    task.metadata[TASK_METADATA.statusBeforeCancel] = task.status;
     return this.updateTask(taskId, { status: TaskStatus.Cancelled });
   }
 
@@ -239,7 +239,7 @@ export class TaskBoard {
     if (!task) return undefined;
 
     // Store the pre-pause status so we can restore on resume
-    task.metadata['statusBeforePause'] = task.status;
+    task.metadata[TASK_METADATA.statusBeforePause] = task.status;
     return this.updateTask(taskId, { status: TaskStatus.Paused });
   }
 

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { TaskBoard } from '../orchestration/taskBoard';
 import { AgentRegistry } from '../agents/registry';
-import { TaskStatus } from '../types';
+import { TaskStatus, TASK_METADATA } from '../types';
 
 /**
  * Summary data passed from TeamLeadAgent.reportFinalStatus() to the panel.
@@ -68,6 +68,7 @@ export class SummaryPanel {
   ): SummaryData {
     const stats = taskBoard.getStats();
     const allTasks = taskBoard.getAllTasks();
+    const effectiveTotal = stats.total - (stats.cancelled ?? 0);
 
     const tasks: SummaryData['tasks'] = allTasks
       .filter((t) => t.status === TaskStatus.Completed || t.status === TaskStatus.Failed)
@@ -82,7 +83,7 @@ export class SummaryPanel {
             title: t.title,
             status: 'failed' as const,
             assigneeName,
-            error: (t.metadata['failureReason'] as string) ?? 'Unknown error',
+            error: (t.metadata[TASK_METADATA.failureReason] as string) ?? 'Unknown error',
           };
         }
 
@@ -90,15 +91,15 @@ export class SummaryPanel {
           title: t.title,
           status: 'completed' as const,
           assigneeName,
-          summary: (t.metadata['completionSummary'] as string)?.slice(0, 300),
-          filesWritten: (t.metadata['filesWritten'] as string[]) ?? [],
+          summary: (t.metadata[TASK_METADATA.completionSummary] as string)?.slice(0, 300),
+          filesWritten: (t.metadata[TASK_METADATA.filesWritten] as string[]) ?? [],
         };
       });
 
     return {
       completed: stats.completed,
       failed: stats.failed,
-      total: stats.total,
+      total: effectiveTotal,
       tasks,
     };
   }

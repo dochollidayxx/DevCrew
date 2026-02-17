@@ -8,6 +8,7 @@ import {
   Task,
   TaskPriority,
   TaskStatus,
+  TASK_METADATA,
 } from '../types';
 import { Agent, AgentAction } from './agent';
 import { AgentRegistry } from './registry';
@@ -816,7 +817,7 @@ export class TeamLeadAgent extends Agent {
         `Completed tasks:`,
         ...completedTasks.map(
           (t) =>
-            `- ${t.title} (by ${t.assigneeId}):\n  Description: ${t.description.slice(0, 100)}\n  Result: ${(t.metadata['completionSummary'] as string)?.slice(0, 500) ?? 'No summary'}`
+            `- ${t.title} (by ${t.assigneeId}):\n  Description: ${t.description.slice(0, 100)}\n  Result: ${(t.metadata[TASK_METADATA.completionSummary] as string)?.slice(0, 500) ?? 'No summary'}`
         ),
         '',
         `If everything looks good, use <action type="complete">summary</action>.`,
@@ -926,13 +927,13 @@ export class TeamLeadAgent extends Agent {
         const completedTask = this.taskBoard.getTask(payload.taskId);
         if (completedTask) {
           if (payload.summary) {
-            completedTask.metadata['completionSummary'] =
+            completedTask.metadata[TASK_METADATA.completionSummary] =
               typeof payload.summary === 'string'
                 ? payload.summary.slice(0, 2000)
                 : String(payload.summary).slice(0, 2000);
           }
           if (payload.filesWritten?.length) {
-            completedTask.metadata['filesWritten'] = payload.filesWritten;
+            completedTask.metadata[TASK_METADATA.filesWritten] = payload.filesWritten;
           }
         }
         this.integrationQueue.push(payload.taskId);

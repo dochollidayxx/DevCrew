@@ -228,6 +228,17 @@ export interface DevCrewConfig {
   };
 }
 
+// ─── Metadata Key Constants ───────────────────────────────────────────────────
+
+export const TASK_METADATA = {
+  completionSummary: 'completionSummary',
+  filesWritten: 'filesWritten',
+  statusBeforeCancel: 'statusBeforeCancel',
+  statusBeforePause: 'statusBeforePause',
+  failureReason: 'failureReason',
+  dependencyResults: 'dependencyResults',
+} as const;
+
 // ─── Events ───────────────────────────────────────────────────────────────────
 
 export interface DevCrewEvents {

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { AgentStatus, Task, TaskStatus } from '../types';
+import { AgentStatus, Task, TaskStatus, TASK_METADATA } from '../types';
 import { Agent } from '../agents/agent';
 import { AgentRegistry } from '../agents/registry';
 import { TaskBoard } from './taskBoard';
@@ -135,12 +135,12 @@ export class Scheduler {
     }> = [];
     for (const depId of task.dependsOn) {
       const dep = this.taskBoard.getTask(depId);
-      if (dep?.status === TaskStatus.Completed && dep.metadata['completionSummary']) {
+      if (dep?.status === TaskStatus.Completed && dep.metadata[TASK_METADATA.completionSummary]) {
         results.push({
           taskId: dep.id,
           title: dep.title,
-          summary: dep.metadata['completionSummary'] as string,
-          filesWritten: dep.metadata['filesWritten'] as string[] | undefined,
+          summary: dep.metadata[TASK_METADATA.completionSummary] as string,
+          filesWritten: dep.metadata[TASK_METADATA.filesWritten] as string[] | undefined,
         });
       }
     }
@@ -151,7 +151,7 @@ export class Scheduler {
       ...task,
       metadata: {
         ...task.metadata,
-        dependencyResults: results,
+        [TASK_METADATA.dependencyResults]: results,
       },
     };
   }

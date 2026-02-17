@@ -236,7 +236,7 @@ export class ActivityTreeView
         this.addChildOrTopLevel(taskId, {
           label: `${name} blocker resolved`,
           timestamp: time,
-          icon: 'pass',
+          icon: 'pass-filled',
           iconColor: 'testing.iconPassed',
           detail: `Blocker on task ${p.taskId} resolved`,
         });
@@ -339,7 +339,7 @@ export class ActivityTreeView
             label: `Agent removed: ${p.name} (${p.role})`,
             timestamp: time,
             icon: 'person',
-            iconColor: 'charts.gray',
+            iconColor: 'testing.iconFailed',
             detail: `Team member removed: ${p.name}`,
           },
         });

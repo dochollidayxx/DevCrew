@@ -10,6 +10,7 @@ import {
   Message,
   MessageType,
   Task,
+  TASK_METADATA,
 } from '../types';
 import { MessageBus } from '../communication/messageBus';
 import { FileManager } from '../fileops/fileManager';
@@ -752,7 +753,7 @@ export abstract class Agent {
     }
   }
 
-  private async handleRunCommand(action: RunCommandAction, task: Task): Promise<string> {
+  private async handleRunCommand(action: RunCommandAction, _task: Task): Promise<string> {
     const ALLOWED_COMMANDS = ['npm', 'npx', 'yarn', 'pnpm', 'node', 'tsc', 'eslint', 'jest', 'vitest', 'git', 'cat', 'ls', 'find', 'grep'];
     const DANGEROUS_PATTERNS = /[;`]|\$\(|&&|\|\|/;
 
@@ -850,7 +851,7 @@ export abstract class Agent {
   }
 
   protected buildTaskPrompt(task: Task): string {
-    const depResults = task.metadata['dependencyResults'] as Array<{
+    const depResults = task.metadata[TASK_METADATA.dependencyResults] as Array<{
       taskId: string;
       title: string;
       summary: string;

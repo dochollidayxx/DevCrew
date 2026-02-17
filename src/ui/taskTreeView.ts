@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { TaskBoard } from '../orchestration/taskBoard';
-import { Task, TaskStatus, TaskPriority } from '../types';
+import { TaskStatus, TaskPriority } from '../types';
 
 /**
  * TreeDataProvider for the "Task Board" sidebar panel. Shows tasks
@@ -55,6 +55,8 @@ export class TaskTreeView
       { status: TaskStatus.InReview, label: 'In Review', icon: 'eye' },
       { status: TaskStatus.Completed, label: 'Completed', icon: 'pass-filled' },
       { status: TaskStatus.Failed, label: 'Failed', icon: 'circle-slash' },
+      { status: TaskStatus.Paused, label: 'Paused', icon: 'debug-pause' },
+      { status: TaskStatus.Cancelled, label: 'Cancelled', icon: 'circle-slash' },
     ];
 
     return groups
@@ -86,7 +88,7 @@ export class TaskTreeView
         item.taskId = task.id;
         item.contextValue = 'task';
         item.description = task.assigneeId
-          ? `→ ${task.assigneeId.split('-')[1]}`
+          ? `→ ${this.extractRoleName(task.assigneeId)}`
           : 'unassigned';
         item.tooltip = new vscode.MarkdownString(
           `**${task.title}**\n\n${task.description}\n\n` +
@@ -134,6 +136,11 @@ export class TaskTreeView
     }
 
     return items;
+  }
+
+  private extractRoleName(agentId: string): string {
+    const match = agentId.match(/^agent-(.+)-\d+$/);
+    return match ? match[1] : agentId;
   }
 
   private priorityIcon(priority: TaskPriority): string {

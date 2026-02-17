@@ -8,8 +8,8 @@
     "vscode": "^1.93.0"
   },
   "categories": [
-    "Programming Languages",
-    "Other"
+    "AI",
+    "Machine Learning"
   ],
   "activationEvents": [],
   "main": "./dist/extension.js",
@@ -37,15 +37,18 @@
       },
       {
         "command": "devcrew.assignTask",
-        "title": "DevCrew: Assign Task to Team"
+        "title": "DevCrew: Assign Task to Team",
+        "icon": "$(comment-discussion)"
       },
       {
         "command": "devcrew.showDashboard",
-        "title": "DevCrew: Show Dashboard"
+        "title": "DevCrew: Show Dashboard",
+        "icon": "$(dashboard)"
       },
       {
         "command": "devcrew.teamChat",
-        "title": "DevCrew: Chat with Team Lead"
+        "title": "DevCrew: Chat with Team Lead",
+        "icon": "$(comment)"
       }
     ],
     "viewsContainers": {
@@ -76,29 +79,29 @@
     "viewsWelcome": [
       {
         "view": "devcrew-team",
-        "contents": "No team is running.\n[Start Team](command:devcrew.startTeam)"
+        "contents": "Welcome to DevCrew!\n\nStart a parallel AI agent team to collaboratively work on coding tasks.\n\n[$(play) Start Team](command:devcrew.startTeam)\n\n[$(gear) Configure Settings](command:workbench.action.openSettings?%5B%22devcrew%22%5D)"
       }
     ],
     "menus": {
       "view/title": [
         {
           "command": "devcrew.startTeam",
-          "when": "view == devcrew-team",
+          "when": "view == devcrew-team && !devcrew:teamRunning",
           "group": "navigation"
         },
         {
           "command": "devcrew.stopTeam",
-          "when": "view == devcrew-team",
+          "when": "view == devcrew-team && devcrew:teamRunning",
           "group": "navigation"
         },
         {
           "command": "devcrew.pauseTeam",
-          "when": "view == devcrew-team",
+          "when": "view == devcrew-team && devcrew:teamRunning && !devcrew:teamPaused",
           "group": "navigation"
         },
         {
           "command": "devcrew.resumeTeam",
-          "when": "view == devcrew-team",
+          "when": "view == devcrew-team && devcrew:teamPaused",
           "group": "navigation"
         }
       ]
@@ -128,7 +131,7 @@
               "docs"
             ]
           },
-          "description": "Roles to include in the dev team (Team Lead is always included)"
+          "description": "Role templates available for the Team Lead to choose from when staffing. The Team Lead creates agents dynamically per-request — this list does not determine the fixed team composition."
         },
         "devcrew.team.maxParallelAgents": {
           "type": "number",

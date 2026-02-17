@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { TaskBoard } from '../orchestration/taskBoard';
 import { AgentRegistry } from '../agents/registry';
 import { MessageBus } from '../communication/messageBus';
-import { Task, TaskStatus, AgentStatus, Message, MessageType } from '../types';
+import { TaskStatus, AgentStatus, Message, MessageType } from '../types';
 
 /**
  * Webview panel that shows a rich dashboard with the task board,
@@ -216,6 +216,10 @@ export class DashboardPanel {
       <div class="number" style="color: var(--error)">${stats.failed}</div>
       <div class="label">Failed</div>
     </div>
+    ${stats.cancelled > 0 ? `<div class="stat">
+      <div class="number" style="opacity: 0.6">${stats.cancelled}</div>
+      <div class="label">Cancelled</div>
+    </div>` : ''}
   </div>
 
   <div class="grid">
@@ -244,7 +248,7 @@ export class DashboardPanel {
             <span class="status-dot status-${this.taskStatusClass(t.status)}"></span>
             <span>${t.title}</span>
             <span class="badge">${t.status}</span>
-            ${t.assigneeId ? `<span style="opacity:0.6">${t.assigneeId.split('-')[1]}</span>` : ''}
+            ${t.assigneeId ? `<span style="opacity:0.6">${this.escHtml(this.extractRoleName(t.assigneeId))}</span>` : ''}
           </div>`
         )
         .join('')}
@@ -281,6 +285,11 @@ export class DashboardPanel {
         return 'error';
       case AgentStatus.Done:
         return 'done';
+      case AgentStatus.Paused:
+        return 'waiting';
+      case AgentStatus.WaitingForReview:
+      case AgentStatus.WaitingForDependency:
+        return 'waiting';
       default:
         return 'waiting';
     }
@@ -296,17 +305,35 @@ export class DashboardPanel {
       case TaskStatus.Blocked:
       case TaskStatus.Failed:
         return 'blocked';
+      case TaskStatus.Cancelled:
+      case TaskStatus.Paused:
+        return 'waiting';
+      case TaskStatus.InReview:
+        return 'waiting';
       default:
         return 'idle';
     }
   }
 
+  private escHtml(text: string): string {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  private extractRoleName(agentId: string): string {
+    const match = agentId.match(/^agent-(.+)-\d+$/);
+    return match ? match[1] : agentId;
+  }
+
   private formatMessage(msg: Message): string {
-    const from = msg.fromAgentId.split('-')[1] ?? msg.fromAgentId;
+    const from = this.escHtml(this.extractRoleName(msg.fromAgentId));
 
     switch (msg.type) {
       case MessageType.StatusUpdate:
-        return `<strong>${from}</strong>: ${(msg.payload as { message: string }).message}`;
+        return `<strong>${from}</strong>: ${this.escHtml((msg.payload as { message: string }).message)}`;
       case MessageType.TaskCompleted:
         return `<strong>${from}</strong> completed a task`;
       case MessageType.TaskFailed:
@@ -316,7 +343,7 @@ export class DashboardPanel {
       case MessageType.Question:
         return `<strong>${from}</strong> asked a question`;
       default:
-        return `${from}: ${msg.type}`;
+        return `${from}: ${this.escHtml(msg.type)}`;
     }
   }
 
