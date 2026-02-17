@@ -713,6 +713,41 @@ const otherNew = "qux";</content>
     });
   });
 
+  // ─── cancelCurrentTask ─────────────────────────────────────────────
+
+  describe('cancelCurrentTask', () => {
+    it('sets status to Idle', () => {
+      agent.start();
+      // Simulate working state
+      (agent as any).state.status = AgentStatus.Working;
+      (agent as any).state.currentTaskId = 'task-123';
+
+      agent.cancelCurrentTask();
+
+      expect(agent.getState().status).toBe(AgentStatus.Idle);
+    });
+
+    it('clears currentTaskId', () => {
+      agent.start();
+      (agent as any).state.currentTaskId = 'task-123';
+
+      agent.cancelCurrentTask();
+
+      expect(agent.getState().currentTaskId).toBeNull();
+    });
+
+    it('keeps message subscription alive (unlike stop)', () => {
+      agent.start();
+      (agent as any).state.status = AgentStatus.Working;
+      (agent as any).state.currentTaskId = 'task-123';
+
+      agent.cancelCurrentTask();
+
+      // The messageSubscription should still be active (not disposed)
+      expect((agent as any).messageSubscription).toBeDefined();
+    });
+  });
+
   // ─── State Management ──────────────────────────────────────────────
 
   describe('state', () => {

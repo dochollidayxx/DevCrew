@@ -72,8 +72,15 @@ export class DevCrewStatusBar {
 
     // Progress
     if (stats.total > 0) {
-      const pct = Math.round((stats.completed / stats.total) * 100);
-      this.progressItem.text = `${stats.completed}/${stats.total} tasks (${pct}%)`;
+      const effectiveTotal = stats.total - (stats.cancelled ?? 0);
+      const pct = effectiveTotal > 0
+        ? Math.round((stats.completed / effectiveTotal) * 100)
+        : 0;
+      this.progressItem.text = `${stats.completed}/${effectiveTotal} tasks (${pct}%)`;
+
+      if ((stats.cancelled ?? 0) > 0) {
+        this.progressItem.text += ` (${stats.cancelled} cancelled)`;
+      }
 
       if (isPaused && stats.paused > 0) {
         this.progressItem.text += ` $(debug-pause) ${stats.paused} paused`;

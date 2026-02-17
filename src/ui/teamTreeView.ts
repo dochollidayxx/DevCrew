@@ -39,7 +39,7 @@ export class TeamTreeView
     return agents.map((agent) => {
       const state = agent.getState();
       const item = new TeamTreeItem(
-        `${agent.roleConfig.icon} ${agent.roleConfig.name}`,
+        agent.roleConfig.name,
         vscode.TreeItemCollapsibleState.Collapsed,
         agent.id
       );

@@ -49,12 +49,15 @@ DevCrew is a VSCode extension that orchestrates a parallel team of LLM-powered a
 
 Action types: `write_file`, `read_file`, `list_files`, `run_command`, `ask`, `blocker`, `status`, `complete`, `create_agent`, `remove_agent`.
 
+Agents support `cancelCurrentTask()` which aborts execution but keeps the agent alive and Idle (unlike `stop()` which disposes, or `pause()` which sets Paused).
+
 **TeamLeadAgent** handles the full orchestration lifecycle:
-1. **Staffing phase:** Analyzes user request and creates specialist agents dynamically via `<agent>` blocks. Can use built-in role templates from `roleDefinitions.ts` or define fully custom roles.
-2. **Task decomposition:** Decomposes work into `<task>` blocks with explicit role assignments and dependency chains. Enforces architect-first phasing.
-3. **Monitoring:** Polls every 5s, handles blockers, resolves questions from agents.
-4. **Integration:** Runs a final pass when all tasks complete (uses local task object, not TaskBoard).
-5. **Mid-run management:** Can create/remove agents during execution via `create_agent`/`remove_agent` actions.
+1. **Staffing phase:** Analyzes user request and creates specialist agents dynamically via `<agent>` blocks. Can use built-in role templates from `roleDefinitions.ts` or define fully custom roles. Deduplicates — skips creation if a role already exists. Supports `<remove_agent>` blocks to drop unneeded specialists.
+2. **Task decomposition:** Decomposes work into `<task>` blocks with explicit role assignments and dependency chains. Enforces architect-first phasing. New tasks can reference surviving tasks from previous rounds by title in `<depends_on>`.
+3. **Multi-round triage:** When a new request arrives while tasks are still active, enters "triage" mode instead of clearing the board. Presents the active board to the LLM for surgical cancellation via `<cancel_task>` blocks. Cancelled tasks unblock dependents and abort their assigned agents gracefully.
+4. **Monitoring:** Polls every 5s, handles blockers, resolves questions from agents. Excludes cancelled tasks from completion totals.
+5. **Integration:** Runs a final pass when all non-cancelled tasks complete (uses local task object, not TaskBoard).
+6. **Mid-run management:** Can create/remove agents during execution via `create_agent`/`remove_agent` actions.
 
 **SpecialistAgent** executes individual assigned tasks. Built-in role templates (architect, frontend, backend, tester, reviewer, devops, security, docs) are defined in `src/agents/roles/roleDefinitions.ts`, but any custom role can be created at runtime.
 
@@ -62,14 +65,15 @@ Action types: `write_file`, `read_file`, `list_files`, `run_command`, `ask`, `bl
 - `buildTeam()` creates only the Team Lead (no args)
 - `createAgent(roleConfig)` creates, starts, and registers a specialist at runtime
 - `removeAgent(agentId)` stops/disposes a specialist
+- `removeAllSpecialists()` bulk-removes all specialists, keeping the Team Lead
 - Fires `onAgentAdded`/`onAgentRemoved` events for UI refresh
 - `AgentRole` is a free-form `string`, not a fixed union type
 
 ### Orchestration (`src/orchestration/`)
 
-**TaskBoard** manages task state machine (Pending → Assigned → InProgress → Completed/Failed/Blocked/Paused) with dependency tracking and BFS cycle detection. `completeTask()` accepts an optional completion summary stored in metadata for downstream dependencies.
+**TaskBoard** manages task state machine (Pending → Assigned → InProgress → Completed/Failed/Blocked/Paused/Cancelled) with dependency tracking and BFS cycle detection. `completeTask()` accepts an optional completion summary stored in metadata for downstream dependencies. `cancelTask()` transitions any non-terminal task to Cancelled (stores `statusBeforeCancel` in metadata). Cancelled dependencies count as met (unblocking downstream tasks). `getStats()` includes a `cancelled` count. `clear()` fires `onTaskChange` for each removed task.
 
-**Scheduler** polls every 2s, pulls ready tasks (dependencies met), and dispatches them to their explicitly assigned agents. No heuristic matching — tasks have `assigneeId` set by the Team Lead. Enriches tasks with dependency results (completion summaries + file provenance) before dispatch. Capped at `maxParallelAgents` concurrent executions.
+**Scheduler** polls every 2s, pulls ready tasks (dependencies met), and dispatches them to their explicitly assigned agents. No heuristic matching — tasks have `assigneeId` set by the Team Lead. Enriches tasks with dependency results (completion summaries + file provenance) before dispatch. Capped at `maxParallelAgents` concurrent executions. Completion/failure callbacks guard against overwriting Cancelled or Paused status — only InProgress tasks transition on agent finish.
 
 ### Communication (`src/communication/messageBus.ts`)
 
@@ -99,4 +103,5 @@ Key patterns:
 - Team composition is dynamic — only the Team Lead exists at startup, specialists are created per-request
 - Tasks have explicit `assigneeId` set by Team Lead (no heuristic scheduler matching)
 - Dependency results (summary + filesWritten) propagate through the task chain
+- Multi-round requests use triage mode: active work is preserved and surgically cancelled rather than wiped
 - The extension manifest in `package.json` defines commands, views, menus, and configuration schema

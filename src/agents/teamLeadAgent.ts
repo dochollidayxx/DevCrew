@@ -66,39 +66,71 @@ export class TeamLeadAgent extends Agent {
    *   2. Decomposition — break work into tasks assigned to those agents
    */
   async handleUserRequest(request: string): Promise<void> {
+    const { mode, boardSummary } = this.prepareForRequest();
     this.setStatus(AgentStatus.Working);
     this.log(`Received user request: ${request}`);
 
-    // ── Phase 1: Staffing ──────────────────────────────────────────────
-    this.reportProgress('Phase 1/2: Analyzing request and staffing team...');
+    // ── Phase 1: Staffing (+ Triage when active work exists) ─────────
+    this.reportProgress(mode === 'triage'
+      ? 'Phase 1/2: Analyzing request, triaging active work, and staffing team...'
+      : 'Phase 1/2: Analyzing request and staffing team...');
 
     const roleTemplateSummary = getRoleTemplateSummary();
+    const existingTeamContext = this.buildExistingTeamContext();
+
+    const staffingPromptParts = [
+      `## User Request`,
+      request,
+      '',
+      existingTeamContext,
+      '',
+    ];
+
+    // Include board context and cancel_task instructions in triage mode
+    if (mode === 'triage' && boardSummary) {
+      staffingPromptParts.push(
+        `## Active Task Board`,
+        `The following tasks are still on the board from the previous request.`,
+        `Review them and decide which to keep and which to cancel.`,
+        boardSummary,
+        '',
+        `To cancel a task that is no longer needed, output a <cancel_task> block:`,
+        `<cancel_task>task-id-or-title</cancel_task>`,
+        '',
+        `Tasks you don't cancel will continue running.`,
+        '',
+      );
+    }
+
+    staffingPromptParts.push(
+      `## Your Job: Staffing`,
+      `Analyze this request and decide what team members you need.`,
+      '',
+      `Available role templates (you can use as-is, customize, or create new ones):`,
+      roleTemplateSummary,
+      '',
+      `For each agent you need, output an <agent> block:`,
+      `<agent>`,
+      `  <role>unique-role-id</role>`,
+      `  <name>Display Name</name>`,
+      `  <description>What this agent does</description>`,
+      `  <prompt>Detailed system prompt for this specialist...</prompt>`,
+      `  <capabilities>comma, separated, capabilities</capabilities>`,
+      `</agent>`,
+      '',
+      `For built-in role templates, you only need to provide the <role> tag — the rest will be filled from the template. Add other tags only to override template defaults.`,
+      '',
+      `To remove an existing agent you no longer need, output a <remove_agent> block:`,
+      `<remove_agent>role-id</remove_agent>`,
+      '',
+      `To keep an existing agent, simply don't mention them — they'll stay on the team.`,
+      '',
+      `After your agent blocks, include any questions for the user in <question> tags.`,
+    );
 
     this.conversationHistory.push({
       role: 'user',
-      content: [
-        `## User Request`,
-        request,
-        '',
-        `## Your Job: Staffing`,
-        `Analyze this request and decide what team members you need.`,
-        '',
-        `Available role templates (you can use as-is, customize, or create new ones):`,
-        roleTemplateSummary,
-        '',
-        `For each agent you need, output an <agent> block:`,
-        `<agent>`,
-        `  <role>unique-role-id</role>`,
-        `  <name>Display Name</name>`,
-        `  <description>What this agent does</description>`,
-        `  <prompt>Detailed system prompt for this specialist...</prompt>`,
-        `  <capabilities>comma, separated, capabilities</capabilities>`,
-        `</agent>`,
-        '',
-        `For built-in role templates, you only need to provide the <role> tag — the rest will be filled from the template. Add other tags only to override template defaults.`,
-        '',
-        `After your agent blocks, include any questions for the user in <question> tags.`,
-      ].join('\n'),
+      content: staffingPromptParts.join('\n'),
     });
 
     let lastReportedAgentCount = 0;
@@ -113,11 +145,39 @@ export class TeamLeadAgent extends Agent {
       }
     );
 
-    // Parse and create agents
+    // Execute triage decisions (cancel tasks, abort agents)
+    if (mode === 'triage') {
+      this.executeCancellations(staffingResponse);
+    }
+
+    // Process agent removals first
+    const removals = this.parseRemoveAgentBlocks(staffingResponse);
+    for (const roleId of removals) {
+      const agent = this.registry.getAgentByRole(roleId);
+      if (agent) {
+        this.registry.removeAgent(agent.id);
+        this.log(`Removed agent: ${agent.roleConfig.name} (${roleId})`);
+        this.sendMessage(MessageType.AgentRemoved, null, {
+          agentId: agent.id,
+          role: roleId,
+          name: agent.roleConfig.name,
+        });
+      }
+    }
+
+    // Parse and create agents (skip if role already exists)
     const parsedAgents = this.parseAgentBlocks(staffingResponse);
+    let createdCount = 0;
     for (const agentDef of parsedAgents) {
+      const existing = this.registry.getAgentByRole(agentDef.role);
+      if (existing) {
+        this.log(`Skipping agent creation — role "${agentDef.role}" already exists (${existing.id})`);
+        continue;
+      }
+
       const roleConfig = this.buildRoleConfig(agentDef);
       const agent = this.registry.createAgent(roleConfig);
+      createdCount++;
       this.log(`Created agent: ${agent.roleConfig.name} (${agent.roleConfig.role})`);
 
       // Notify activity feed
@@ -128,7 +188,12 @@ export class TeamLeadAgent extends Agent {
       });
     }
 
-    this.reportProgress(`Staffed ${parsedAgents.length} agent${parsedAgents.length !== 1 ? 's' : ''}. Phase 2/2: Decomposing tasks...`);
+    const totalSpecialists = this.registry.getSpecialists().length;
+    const keptCount = totalSpecialists - createdCount;
+    const staffMsg = keptCount > 0
+      ? `Team: ${totalSpecialists} agents (${keptCount} kept, ${createdCount} new).`
+      : `Staffed ${createdCount} agent${createdCount !== 1 ? 's' : ''}.`;
+    this.reportProgress(`${staffMsg} Phase 2/2: Decomposing tasks...`);
 
     // Handle any questions from staffing phase
     const staffingQuestions = this.parseQuestions(staffingResponse);
@@ -138,40 +203,57 @@ export class TeamLeadAgent extends Agent {
 
     // ── Phase 2: Task Decomposition ────────────────────────────────────
     const teamContext = this.buildTeamContext();
+    const survivingContext = this.buildSurvivingTaskContext();
+
+    const decompositionParts = [
+      `## Team Created`,
+      `You now have these team members:`,
+      teamContext,
+      '',
+    ];
+
+    if (survivingContext) {
+      decompositionParts.push(
+        `## Surviving Tasks`,
+        `These tasks are still on the board. New tasks will be ADDED alongside them.`,
+        `You can reference surviving task titles in <depends_on> tags.`,
+        survivingContext,
+        '',
+      );
+    }
+
+    decompositionParts.push(
+      `## Your Job: Task Decomposition`,
+      `Decompose the following request into concrete tasks for your team:`,
+      `> ${request}`,
+      '',
+      `IMPORTANT — phasing rules:`,
+      `1. ALWAYS start with an architect task that defines the system design, interfaces, data models, and file structure. This task must produce concrete artifacts (type definitions, API contracts, schemas) — not just an assessment.`,
+      `2. ALL implementation tasks (frontend, backend, etc.) MUST depend on the architect's design task so they build against the defined contracts.`,
+      `3. Testing and review tasks MUST depend on the implementation tasks they verify.`,
+      `4. In each task description, explicitly reference which interface/contract files from the architect task the agent should read and conform to.`,
+      '',
+      `For each task, specify:`,
+      `- A clear title and description (include which files to read and which to create)`,
+      `- Which role should handle it (must match a role from the team above)`,
+      `- Dependencies on other tasks (by title reference)`,
+      `- Priority: critical, high, medium, or low`,
+      '',
+      `Output your plan as a series of <task> blocks:`,
+      `<task>`,
+      `  <title>Task title</title>`,
+      `  <description>Detailed description of what to do</description>`,
+      `  <role>role-name</role>`,
+      `  <priority>medium</priority>`,
+      `  <depends_on>Title of dependency task</depends_on>`,
+      `</task>`,
+      '',
+      `Add any remaining questions in <question> tags.`,
+    );
 
     this.conversationHistory.push({
       role: 'user',
-      content: [
-        `## Team Created`,
-        `You now have these team members:`,
-        teamContext,
-        '',
-        `## Your Job: Task Decomposition`,
-        `Now decompose the original request into concrete tasks for your team.`,
-        '',
-        `IMPORTANT — phasing rules:`,
-        `1. ALWAYS start with an architect task that defines the system design, interfaces, data models, and file structure. This task must produce concrete artifacts (type definitions, API contracts, schemas) — not just an assessment.`,
-        `2. ALL implementation tasks (frontend, backend, etc.) MUST depend on the architect's design task so they build against the defined contracts.`,
-        `3. Testing and review tasks MUST depend on the implementation tasks they verify.`,
-        `4. In each task description, explicitly reference which interface/contract files from the architect task the agent should read and conform to.`,
-        '',
-        `For each task, specify:`,
-        `- A clear title and description (include which files to read and which to create)`,
-        `- Which role should handle it (must match a role from the team above)`,
-        `- Dependencies on other tasks (by title reference)`,
-        `- Priority: critical, high, medium, or low`,
-        '',
-        `Output your plan as a series of <task> blocks:`,
-        `<task>`,
-        `  <title>Task title</title>`,
-        `  <description>Detailed description of what to do</description>`,
-        `  <role>role-name</role>`,
-        `  <priority>medium</priority>`,
-        `  <depends_on>Title of dependency task</depends_on>`,
-        `</task>`,
-        '',
-        `Add any remaining questions in <question> tags.`,
-      ].join('\n'),
+      content: decompositionParts.join('\n'),
     });
 
     let lastReportedTaskCount = 0;
@@ -193,7 +275,7 @@ export class TeamLeadAgent extends Agent {
       await this.askUserQuestions(questions);
     }
 
-    // Create tasks on the board
+    // Create tasks on the board (added alongside surviving tasks)
     const createdTasks = this.createTasksFromPlan(parsedTasks);
     this.log(`Created ${createdTasks.length} tasks`);
 
@@ -205,8 +287,210 @@ export class TeamLeadAgent extends Agent {
 
     this.reportProgress(`Created ${createdTasks.length} tasks. Team is working...`);
 
-    // Start monitoring
-    this.startMonitoring();
+    // Start monitoring (only if there are active tasks to monitor)
+    const activeStats = this.taskBoard.getStats();
+    const activeTasks = activeStats.total - activeStats.cancelled - activeStats.completed;
+    if (activeTasks > 0) {
+      this.startMonitoring();
+    } else {
+      this.log('No active tasks — skipping monitoring.');
+    }
+  }
+
+  /**
+   * Assess board state and prepare for a new request. Instead of always
+   * nuking the board, returns 'triage' mode when active work exists so
+   * the Team Lead can surgically cancel/keep tasks.
+   */
+  private prepareForRequest(): { mode: 'fresh' | 'triage'; boardSummary: string } {
+    this.stopMonitoring();
+    this.integrationCompleted = false;
+    this.integrationQueue = [];
+
+    const stats = this.taskBoard.getStats();
+    const hasActiveWork = stats.inProgress > 0 || stats.pending > 0 || stats.blocked > 0;
+
+    if (!hasActiveWork) {
+      // All done (or empty board) — clear and start fresh
+      this.taskBoard.clear();
+      this.conversationHistory.push({
+        role: 'user',
+        content: '--- NEW ROUND ---\nThe previous request is complete. A new user request follows.',
+      });
+      return { mode: 'fresh', boardSummary: '' };
+    }
+
+    // Active work exists — build board summary for triage
+    this.conversationHistory.push({
+      role: 'user',
+      content: '--- NEW REQUEST ---\nA new user request follows. Some tasks are still active.',
+    });
+    return { mode: 'triage', boardSummary: this.buildBoardContext() };
+  }
+
+  private buildExistingTeamContext(): string {
+    const specialists = this.registry.getSpecialists();
+    if (specialists.length === 0) {
+      return `## Existing Team\nNo specialist agents — create all you need.`;
+    }
+
+    const lines = specialists.map((a) => {
+      const status = a.getState().status;
+      return `- **${a.roleConfig.name}** (role: \`${a.roleConfig.role}\`): ${a.roleConfig.description} [status: ${status}]`;
+    });
+
+    return [
+      `## Existing Team`,
+      `You already have these specialist agents:`,
+      ...lines,
+      '',
+      `You can:`,
+      `- **Keep** an agent (don't mention them — they stay)`,
+      `- **Remove** an agent you no longer need: \`<remove_agent>role-id</remove_agent>\``,
+      `- **Replace** an agent: remove then add a new one`,
+      `- **Add** new agents with \`<agent>\` blocks as usual`,
+    ].join('\n');
+  }
+
+  private buildBoardContext(): string {
+    const tasks = this.taskBoard.getAllTasks();
+    const groups: Record<string, Task[]> = {
+      'In Progress': [],
+      'Pending': [],
+      'Blocked': [],
+      'Completed': [],
+    };
+
+    for (const task of tasks) {
+      switch (task.status) {
+        case TaskStatus.InProgress:
+        case TaskStatus.Assigned:
+          groups['In Progress'].push(task);
+          break;
+        case TaskStatus.Pending:
+          groups['Pending'].push(task);
+          break;
+        case TaskStatus.Blocked:
+          groups['Blocked'].push(task);
+          break;
+        case TaskStatus.Completed:
+          groups['Completed'].push(task);
+          break;
+      }
+    }
+
+    const lines: string[] = [];
+    for (const [status, statusTasks] of Object.entries(groups)) {
+      if (statusTasks.length === 0) continue;
+      lines.push(`### ${status}`);
+      for (const t of statusTasks) {
+        const assignee = t.assigneeId
+          ? this.registry.getAgent(t.assigneeId)?.roleConfig.name ?? t.assigneeId
+          : 'unassigned';
+        lines.push(`- **${t.title}** (id: \`${t.id}\`, role: ${assignee}): ${t.description.slice(0, 100)}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  private parseCancelTaskBlocks(response: string): string[] {
+    const ids: string[] = [];
+    const regex = /<cancel_task>([^]*?)<\/cancel_task>/g;
+    let match;
+    while ((match = regex.exec(response)) !== null) {
+      const ref = match[1].trim();
+      if (ref) ids.push(ref);
+    }
+    return ids;
+  }
+
+  private executeCancellations(response: string): void {
+    const refs = this.parseCancelTaskBlocks(response);
+    if (refs.length === 0) return;
+
+    const allTasks = this.taskBoard.getAllTasks();
+
+    for (const ref of refs) {
+      // Resolve by ID first, fall back to title match
+      let task = this.taskBoard.getTask(ref);
+      if (!task) {
+        task = allTasks.find(t => t.title.toLowerCase() === ref.toLowerCase());
+      }
+      if (!task) {
+        this.log(`Cancel target not found: "${ref}"`);
+        continue;
+      }
+
+      const result = this.taskBoard.cancelTask(task.id);
+      if (!result) {
+        this.log(`Could not cancel task "${task.title}" (status: ${task.status})`);
+        continue;
+      }
+
+      this.log(`Cancelled task: ${task.title}`);
+
+      // If the assigned agent is working on this task, abort it
+      if (task.assigneeId) {
+        const agent = this.registry.getAgent(task.assigneeId);
+        if (agent && agent.getState().status === AgentStatus.Working && agent.getState().currentTaskId === task.id) {
+          agent.cancelCurrentTask();
+          this.log(`Aborted agent ${agent.roleConfig.name} for cancelled task`);
+        }
+      }
+
+      this.sendMessage(MessageType.StatusUpdate, null, {
+        message: `Task cancelled: ${task.title}`,
+        taskId: task.id,
+      });
+    }
+  }
+
+  private buildSurvivingTaskContext(): string {
+    const tasks = this.taskBoard.getAllTasks();
+    const active: Task[] = [];
+    const completed: Task[] = [];
+
+    for (const task of tasks) {
+      if (task.status === TaskStatus.Cancelled) continue;
+      if (task.status === TaskStatus.Completed) {
+        completed.push(task);
+      } else {
+        active.push(task);
+      }
+    }
+
+    if (active.length === 0 && completed.length === 0) return '';
+
+    const lines: string[] = [];
+    if (active.length > 0) {
+      lines.push('### Active Tasks');
+      for (const t of active) {
+        lines.push(`- **${t.title}** (id: \`${t.id}\`, status: ${t.status})`);
+      }
+      lines.push('');
+    }
+    if (completed.length > 0) {
+      lines.push('### Completed Tasks (for dependency context)');
+      for (const t of completed) {
+        lines.push(`- **${t.title}** (id: \`${t.id}\`)`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  private parseRemoveAgentBlocks(response: string): string[] {
+    const roles: string[] = [];
+    const regex = /<remove_agent>([^]*?)<\/remove_agent>/g;
+    let match;
+    while ((match = regex.exec(response)) !== null) {
+      const role = match[1].trim();
+      if (role) roles.push(role);
+    }
+    return roles;
   }
 
   private reportProgress(message: string): void {
@@ -298,6 +582,12 @@ export class TeamLeadAgent extends Agent {
   private createTasksFromPlan(parsedTasks: ParsedTask[]): Task[] {
     const createdTasks: Task[] = [];
     const titleToId: Map<string, string> = new Map();
+
+    // Seed with ALL existing tasks on the board so new tasks can
+    // reference surviving tasks by title in <depends_on>
+    for (const existing of this.taskBoard.getAllTasks()) {
+      titleToId.set(existing.title.toLowerCase(), existing.id);
+    }
 
     // Single pass: create each task with its resolved dependsOn array.
     // Dependencies on earlier tasks are resolved immediately; forward
@@ -426,9 +716,10 @@ export class TeamLeadAgent extends Agent {
 
   private async monitorTick(): Promise<void> {
     const stats = this.taskBoard.getStats();
+    const effectiveTotal = stats.total - stats.cancelled;
 
     // Check for completion
-    if (stats.total > 0 && stats.completed === stats.total) {
+    if (effectiveTotal > 0 && stats.completed === effectiveTotal) {
       if (this.integrationCompleted) {
         this.log('All tasks completed and integration already done. Stopping.');
         this.stopMonitoring();
@@ -442,8 +733,8 @@ export class TeamLeadAgent extends Agent {
 
     // Check for all failed/blocked
     if (
-      stats.total > 0 &&
-      stats.completed + stats.failed + stats.blocked === stats.total
+      effectiveTotal > 0 &&
+      stats.completed + stats.failed + stats.blocked === effectiveTotal
     ) {
       this.log('All tasks ended (some failed/blocked). Reporting to user.');
       this.stopMonitoring();

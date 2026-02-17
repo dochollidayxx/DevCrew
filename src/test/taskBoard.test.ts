@@ -381,6 +381,98 @@ describe('TaskBoard', () => {
     });
   });
 
+  // ─── cancelTask ──────────────────────────────────────────────────
+
+  describe('cancelTask', () => {
+    it('transitions to Cancelled and stores statusBeforeCancel', () => {
+      const task = board.createTask({ title: 'T', description: 'd' });
+      board.assignTask(task.id, 'agent-1');
+      board.startTask(task.id);
+
+      const cancelled = board.cancelTask(task.id);
+      expect(cancelled?.status).toBe(TaskStatus.Cancelled);
+      expect(cancelled?.metadata['statusBeforeCancel']).toBe(TaskStatus.InProgress);
+    });
+
+    it('refuses to cancel Completed tasks', () => {
+      const task = board.createTask({ title: 'T', description: 'd' });
+      board.completeTask(task.id);
+
+      const result = board.cancelTask(task.id);
+      expect(result).toBeUndefined();
+      expect(board.getTask(task.id)!.status).toBe(TaskStatus.Completed);
+    });
+
+    it('refuses to cancel already-Cancelled tasks', () => {
+      const task = board.createTask({ title: 'T', description: 'd' });
+      board.cancelTask(task.id);
+
+      const result = board.cancelTask(task.id);
+      expect(result).toBeUndefined();
+    });
+
+    it('fires onTaskChange event', () => {
+      const listener = vi.fn();
+      board.onTaskChange(listener);
+
+      const task = board.createTask({ title: 'T', description: 'd' });
+      listener.mockClear();
+
+      board.cancelTask(task.id);
+      expect(listener).toHaveBeenCalled();
+      const firedTask = listener.mock.calls[0][0];
+      expect(firedTask.status).toBe(TaskStatus.Cancelled);
+    });
+
+    it('returns undefined for non-existent task', () => {
+      expect(board.cancelTask('fake-id')).toBeUndefined();
+    });
+  });
+
+  // ─── Cancelled tasks in getStats ──────────────────────────────────
+
+  describe('getStats with cancelled', () => {
+    it('counts cancelled tasks correctly', () => {
+      const t1 = board.createTask({ title: 'A', description: 'a' });
+      const t2 = board.createTask({ title: 'B', description: 'b' });
+      board.createTask({ title: 'C', description: 'c' });
+
+      board.cancelTask(t1.id);
+      board.cancelTask(t2.id);
+
+      const stats = board.getStats();
+      expect(stats.cancelled).toBe(2);
+      expect(stats.pending).toBe(1);
+      expect(stats.total).toBe(3);
+    });
+  });
+
+  // ─── Cancelled dependencies ───────────────────────────────────────
+
+  describe('cancelled dependencies', () => {
+    it('areDependenciesMet treats Cancelled dependencies as met', () => {
+      const t1 = board.createTask({ title: 'A', description: 'a' });
+      const t2 = board.createTask({ title: 'B', description: 'b' });
+      board.addDependency(t2.id, t1.id);
+
+      expect(board.areDependenciesMet(t2.id)).toBe(false);
+
+      board.cancelTask(t1.id);
+      expect(board.areDependenciesMet(t2.id)).toBe(true);
+    });
+
+    it('getReadyTasks includes tasks whose only dependency is Cancelled', () => {
+      const t1 = board.createTask({ title: 'A', description: 'a' });
+      const t2 = board.createTask({ title: 'B', description: 'b' });
+      board.addDependency(t2.id, t1.id);
+
+      expect(board.getReadyTasks().map(t => t.id)).not.toContain(t2.id);
+
+      board.cancelTask(t1.id);
+      expect(board.getReadyTasks().map(t => t.id)).toContain(t2.id);
+    });
+  });
+
   // ─── Clear / Dispose ───────────────────────────────────────────────
 
   it('clear removes all tasks', () => {
@@ -389,5 +481,21 @@ describe('TaskBoard', () => {
     board.clear();
 
     expect(board.getAllTasks()).toHaveLength(0);
+  });
+
+  it('clear fires onTaskChange for each removed task', () => {
+    const listener = vi.fn();
+    board.onTaskChange(listener);
+
+    const t1 = board.createTask({ title: 'A', description: 'a' });
+    const t2 = board.createTask({ title: 'B', description: 'b' });
+    listener.mockClear(); // ignore events from createTask updates
+
+    board.clear();
+
+    expect(listener).toHaveBeenCalledTimes(2);
+    const firedIds = listener.mock.calls.map((c: any) => c[0].id);
+    expect(firedIds).toContain(t1.id);
+    expect(firedIds).toContain(t2.id);
   });
 });

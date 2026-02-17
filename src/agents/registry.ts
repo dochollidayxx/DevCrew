@@ -86,6 +86,21 @@ export class AgentRegistry {
     return true;
   }
 
+  /**
+   * Remove and dispose all specialist agents, keeping the Team Lead.
+   * Returns the number of specialists removed.
+   */
+  removeAllSpecialists(): number {
+    const specialists = this.getSpecialists();
+    let removed = 0;
+    for (const agent of specialists) {
+      if (this.removeAgent(agent.id)) {
+        removed++;
+      }
+    }
+    return removed;
+  }
+
   getTeamLead(): TeamLeadAgent | null {
     return this.teamLead;
   }

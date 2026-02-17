@@ -167,17 +167,17 @@ export class Scheduler {
     const execution = agent
       .executeTask(enrichedTask, this.maxIterationsPerTask)
       .then((summary) => {
-        // Only mark complete if not paused in the meantime
+        // Only mark complete if still InProgress (guards against Paused and Cancelled)
         const current = this.taskBoard.getTask(task.id);
-        if (current && current.status !== TaskStatus.Paused) {
+        if (current && current.status === TaskStatus.InProgress) {
           this.taskBoard.completeTask(task.id, summary);
           this.log(`Task "${task.title}" completed by ${agent.roleConfig.name}`);
         }
       })
       .catch((err) => {
-        // If paused, the task is already in Paused state — don't overwrite
+        // Only mark failed if still InProgress (guards against Paused and Cancelled)
         const current = this.taskBoard.getTask(task.id);
-        if (current && current.status !== TaskStatus.Paused) {
+        if (current && current.status === TaskStatus.InProgress) {
           this.taskBoard.failTask(task.id);
         }
         this.log(

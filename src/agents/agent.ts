@@ -98,6 +98,20 @@ export abstract class Agent {
   }
 
   /**
+   * Cancel the agent's current task. Aborts execution but keeps the
+   * agent alive and Idle so it can be re-dispatched immediately.
+   * Unlike stop(): does NOT dispose the message subscription.
+   * Unlike pause(): sets status to Idle, not Paused.
+   */
+  cancelCurrentTask(): void {
+    this.abortController?.abort();
+    this.abortController = null;
+    this.state.currentTaskId = null;
+    this.setStatus(AgentStatus.Idle);
+    this.log(`Current task cancelled: ${this.roleConfig.name}`);
+  }
+
+  /**
    * Resume a paused agent. Restores to Idle so the scheduler
    * can dispatch new (or re-queued) tasks to it.
    */

@@ -254,6 +254,45 @@ describe('AgentRegistry', () => {
     expect(registry.getTeamLead()).toBeNull();
   });
 
+  // ─── removeAllSpecialists ──────────────────────────────────────────
+
+  describe('removeAllSpecialists', () => {
+    it('removes all specialists but keeps Team Lead', () => {
+      registry.buildTeam();
+      registry.createAgent(ROLE_DEFINITIONS['frontend']);
+      registry.createAgent(ROLE_DEFINITIONS['backend']);
+      registry.createAgent(ROLE_DEFINITIONS['tester']);
+
+      expect(registry.getSpecialists()).toHaveLength(3);
+
+      const removed = registry.removeAllSpecialists();
+
+      expect(removed).toBe(3);
+      expect(registry.getSpecialists()).toHaveLength(0);
+      expect(registry.getTeamLead()).toBeDefined();
+      expect(registry.getAllAgents()).toHaveLength(1);
+    });
+
+    it('returns 0 when no specialists exist', () => {
+      registry.buildTeam();
+      const removed = registry.removeAllSpecialists();
+      expect(removed).toBe(0);
+    });
+
+    it('fires onAgentRemoved for each removed specialist', () => {
+      registry.buildTeam();
+      const listener = vi.fn();
+      registry.onAgentRemoved(listener);
+
+      registry.createAgent(ROLE_DEFINITIONS['frontend']);
+      registry.createAgent(ROLE_DEFINITIONS['backend']);
+
+      registry.removeAllSpecialists();
+
+      expect(listener).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('messages addressed by role name reach the correct agent', () => {
     registry.buildTeam();
     const agent = registry.createAgent(ROLE_DEFINITIONS['frontend']);

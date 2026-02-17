@@ -141,6 +141,70 @@ describe('Scheduler', () => {
     vi.advanceTimersByTime(10000);
   });
 
+  // ─── Cancelled Task Guards ────────────────────────────────────────
+
+  describe('cancelled task guards', () => {
+    it('does not overwrite Cancelled with Completed', async () => {
+      // Use a slow LLM so we can cancel while execution is in-flight
+      let resolveExecution: ((v: string) => void) | null = null;
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<string>((resolve) => { resolveExecution = resolve; })
+      );
+
+      const task = taskBoard.createTask({
+        title: 'Cancel me',
+        description: 'Will be cancelled mid-run',
+        assigneeId: frontendAgentId,
+      });
+
+      scheduler.start();
+      vi.advanceTimersByTime(2500);
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Task should now be InProgress and dispatched
+      expect(taskBoard.getTask(task.id)!.status).toBe('in_progress');
+
+      // Cancel while execution is in flight
+      taskBoard.cancelTask(task.id);
+      expect(taskBoard.getTask(task.id)!.status).toBe('cancelled');
+
+      // Now let the execution complete
+      resolveExecution!('<action type="complete">Done</action>');
+      await vi.advanceTimersByTimeAsync(100);
+
+      // Task should remain Cancelled, not overwritten to Completed
+      expect(taskBoard.getTask(task.id)!.status).toBe('cancelled');
+    });
+
+    it('does not overwrite Cancelled with Failed', async () => {
+      // Use a slow LLM that we can reject after cancel
+      let rejectExecution: ((err: Error) => void) | null = null;
+      (mockLLM.streamWithProgress as ReturnType<typeof vi.fn>).mockImplementation(
+        () => new Promise<string>((_, reject) => { rejectExecution = reject; })
+      );
+
+      const task = taskBoard.createTask({
+        title: 'Cancel then fail',
+        description: 'Will be cancelled then error',
+        assigneeId: frontendAgentId,
+      });
+
+      scheduler.start();
+      vi.advanceTimersByTime(2500);
+      await vi.advanceTimersByTimeAsync(50);
+
+      // Cancel the task while in flight
+      taskBoard.cancelTask(task.id);
+
+      // Now let the execution fail
+      rejectExecution!(new Error('LLM error'));
+      await vi.advanceTimersByTimeAsync(100);
+
+      // Task should remain Cancelled
+      expect(taskBoard.getTask(task.id)!.status).toBe('cancelled');
+    });
+  });
+
   // ─── Dependency Enrichment ─────────────────────────────────────────
 
   describe('dependency enrichment', () => {

@@ -95,10 +95,10 @@ export class TaskBoard {
     return this.getAllTasks().filter((task) => {
       if (task.status !== TaskStatus.Pending) return false;
 
-      // Check all dependencies are completed
+      // Check all dependencies are completed or cancelled
       return task.dependsOn.every((depId) => {
         const dep = this.tasks.get(depId);
-        return dep?.status === TaskStatus.Completed;
+        return dep?.status === TaskStatus.Completed || dep?.status === TaskStatus.Cancelled;
       });
     });
   }
@@ -161,7 +161,7 @@ export class TaskBoard {
 
     return task.dependsOn.every((depId) => {
       const dep = this.tasks.get(depId);
-      return dep?.status === TaskStatus.Completed;
+      return dep?.status === TaskStatus.Completed || dep?.status === TaskStatus.Cancelled;
     });
   }
 
@@ -217,6 +217,19 @@ export class TaskBoard {
     }
 
     return this.updateTask(taskId, { status: TaskStatus.Blocked });
+  }
+
+  cancelTask(taskId: string): Task | undefined {
+    const task = this.tasks.get(taskId);
+    if (!task) return undefined;
+
+    // Refuse to cancel tasks that are already Completed or Cancelled
+    if (task.status === TaskStatus.Completed || task.status === TaskStatus.Cancelled) {
+      return undefined;
+    }
+
+    task.metadata['statusBeforeCancel'] = task.status;
+    return this.updateTask(taskId, { status: TaskStatus.Cancelled });
   }
 
   // ─── Pause / Resume ──────────────────────────────────────────────
@@ -299,6 +312,7 @@ export class TaskBoard {
     failed: number;
     blocked: number;
     paused: number;
+    cancelled: number;
   } {
     const all = this.getAllTasks();
     return {
@@ -313,6 +327,7 @@ export class TaskBoard {
       failed: all.filter((t) => t.status === TaskStatus.Failed).length,
       blocked: all.filter((t) => t.status === TaskStatus.Blocked).length,
       paused: all.filter((t) => t.status === TaskStatus.Paused).length,
+      cancelled: all.filter((t) => t.status === TaskStatus.Cancelled).length,
     };
   }
 
@@ -323,7 +338,11 @@ export class TaskBoard {
   }
 
   clear(): void {
+    const tasks = Array.from(this.tasks.values());
     this.tasks.clear();
+    for (const task of tasks) {
+      this.fireChange(task);
+    }
   }
 
   dispose(): void {
